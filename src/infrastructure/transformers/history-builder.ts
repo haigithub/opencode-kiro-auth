@@ -364,18 +364,40 @@ function escapeTranscriptTags(text: string): string {
   return text.replace(/<(\/?earlier_conversation)/gi, '&lt;$1')
 }
 
+/** Persists the full text of a truncated item; returns its path, or undefined on failure. */
+export type TruncatedTextSaver = (text: string) => string | undefined
+
 /**
- * Keep the head and tail of text longer than maxChars around a truncation marker.
- * maxChars <= 0 (or non-finite) disables the cap. Never splits a surrogate pair.
+ * Keep the head and tail of text longer than maxChars around a truncation marker, cutting
+ * at line breaks when one falls in the outer half of each budget (whole lines read better
+ * than a split line), otherwise at a character boundary that never splits a surrogate
+ * pair. When `save` stores the full text, the marker points at the file so the model can
+ * read the omitted middle. maxChars <= 0 (or non-finite) disables the cap.
  */
-export function truncateMiddle(text: string, maxChars: number): string {
+export function truncateMiddle(text: string, maxChars: number, save?: TruncatedTextSaver): string {
   if (!(maxChars > 0) || !Number.isFinite(maxChars) || text.length <= maxChars) return text
-  let headEnd = Math.ceil(maxChars / 2)
-  let tailStart = text.length - Math.floor(maxChars / 2)
-  if (isHighSurrogate(text.charCodeAt(headEnd - 1))) headEnd--
-  if (isLowSurrogate(text.charCodeAt(tailStart))) tailStart++
+  const headBudget = Math.ceil(maxChars / 2)
+  const tailBudget = Math.floor(maxChars / 2)
+  const headEnd = headCut(text, headBudget)
+  const tailStart = tailCut(text, text.length - tailBudget, tailBudget)
   const omitted = tailStart - headEnd
-  return `${text.slice(0, headEnd)}\n[... ${omitted} chars truncated ...]\n${text.slice(tailStart)}`
+  const path = save?.(text)
+  const marker = path
+    ? `[... ${omitted} chars truncated; full content saved to ${path} (use Read with offset/limit or Grep) ...]`
+    : `[... ${omitted} chars truncated ...]`
+  return `${text.slice(0, headEnd)}\n${marker}\n${text.slice(tailStart)}`
+}
+
+function headCut(text: string, budget: number): number {
+  const newline = text.lastIndexOf('\n', budget - 1)
+  if (newline >= Math.floor(budget / 2)) return newline
+  return isHighSurrogate(text.charCodeAt(budget - 1)) ? budget - 1 : budget
+}
+
+function tailCut(text: string, start: number, budget: number): number {
+  const newline = text.indexOf('\n', start)
+  if (newline !== -1 && newline < start + Math.ceil(budget / 2)) return newline + 1
+  return isLowSurrogate(text.charCodeAt(start)) ? start + 1 : start
 }
 
 function isHighSurrogate(code: number): boolean {
@@ -389,6 +411,7 @@ function isLowSurrogate(code: number): boolean {
 interface TranscriptLimits {
   toolResultMaxChars: number
   toolInputMaxChars: number
+  save?: TruncatedTextSaver
 }
 
 function renderTranscript(entries: CodeWhispererMessage[], limits: TranscriptLimits): string {
@@ -400,7 +423,7 @@ function renderTranscript(entries: CodeWhispererMessage[], limits: TranscriptLim
       if (text) lines.push(`Assistant: ${text}`)
       for (const use of asst.toolUses ?? []) {
         lines.push(
-          `Assistant tool call ${use.name} (id ${use.toolUseId}) input: ${truncateMiddle(stringifyToolInput(use.input), limits.toolInputMaxChars)}`
+          `Assistant tool call ${use.name} (id ${use.toolUseId}) input: ${truncateMiddle(stringifyToolInput(use.input), limits.toolInputMaxChars, limits.save)}`
         )
       }
       continue
@@ -410,7 +433,8 @@ function renderTranscript(entries: CodeWhispererMessage[], limits: TranscriptLim
     for (const result of user.userInputMessageContext?.toolResults ?? []) {
       const output = truncateMiddle(
         result.content.map((c) => c.text ?? '').join('\n'),
-        limits.toolResultMaxChars
+        limits.toolResultMaxChars,
+        limits.save
       )
       const status = result.status && result.status !== 'success' ? ` [${result.status}]` : ''
       lines.push(`Tool result (id ${result.toolUseId})${status}: ${output}`)
@@ -454,6 +478,8 @@ export interface HistoryFitOptions {
   toolResultMaxChars?: number
   /** Compress mode: max chars per old tool call input in the transcript (0 = no cap). */
   toolInputMaxChars?: number
+  /** Compress mode: stores the full text of truncated items so the marker can link to it. */
+  saveTruncatedText?: TruncatedTextSaver
 }
 
 // Smallest limit that still leaves the system-prompt turn plus one assistant entry.
@@ -477,7 +503,8 @@ export function fitHistoryWithStage(
     const limits = {
       toolResultMaxChars:
         options.toolResultMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_RESULT_MAX_CHARS,
-      toolInputMaxChars: options.toolInputMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_INPUT_MAX_CHARS
+      toolInputMaxChars: options.toolInputMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_INPUT_MAX_CHARS,
+      save: options.saveTruncatedText
     }
     return { history: compressOldestTurns(folded, maxEntries, limits), stage: 'compress' }
   }

@@ -1,5 +1,14 @@
-import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { KIRO_CONSTANTS } from '../constants.js'
@@ -11,9 +20,27 @@ import {
 import { loadConfig } from '../plugin/config/loader.js'
 import { DEFAULT_CONFIG, KiroConfigSchema } from '../plugin/config/schema.js'
 import { transformToSdkRequest } from '../plugin/request.js'
+import {
+  getToolOutputDir,
+  resetTruncatedOutputCache,
+  saveTruncatedText
+} from '../plugin/truncated-output-store.js'
 import type { CodeWhispererMessage } from '../plugin/types'
 
 const MODEL_ID = 'claude-opus-5.5'
+
+// Compress-mode requests save truncated output under XDG_DATA_HOME; keep every test away
+// from the real ~/.local/share/opencode/tool-output.
+const savedDataHome = process.env.XDG_DATA_HOME
+const dataHome = mkdtempSync(join(tmpdir(), 'kiro-tool-output-'))
+beforeAll(() => {
+  process.env.XDG_DATA_HOME = dataHome
+})
+afterAll(() => {
+  if (savedDataHome === undefined) delete process.env.XDG_DATA_HOME
+  else process.env.XDG_DATA_HOME = savedDataHome
+  rmSync(dataHome, { recursive: true, force: true })
+})
 
 const auth: any = {
   access: 'access-token',
@@ -744,8 +771,7 @@ describe('compress transcript caps', () => {
       ).conversationState.history[0].userInputMessage.content as string
 
     const defaults = headFor({})
-    expect(defaults).toContain('[... 4000 chars truncated ...]')
-    expect(defaults).toMatch(/\[\.\.\. \d+ chars truncated \.\.\.\]/)
+    expect(defaults).toMatch(/\[\.\.\. \d+ chars truncated; full content saved to /)
     expect(defaults).not.toContain('o'.repeat(8001))
     expect(defaults).not.toContain('i'.repeat(4001))
 
@@ -767,5 +793,179 @@ describe('compress transcript caps', () => {
         expect(loaded(' 2500 ')[key]).toBe(2500)
       })
     }
+  })
+})
+
+describe('truncateMiddle cut points and saved output', () => {
+  test('cuts at line breaks near the budget edges', () => {
+    const lines = Array.from(
+      { length: 200 },
+      (_, i) => `line ${String(i).padStart(3, '0')} ${'x'.repeat(40)}`
+    )
+    const out = truncateMiddle(lines.join('\n'), 1000)
+    const [head, tail] = out.split(/\n\[\.\.\. \d+ chars truncated \.\.\.\]\n/)
+    expect(head!.startsWith('line 000')).toBe(true)
+    expect(tail!.endsWith(`line 199 ${'x'.repeat(40)}`)).toBe(true)
+    for (const line of [...head!.split('\n'), ...tail!.split('\n')]) {
+      expect(lines).toContain(line)
+    }
+    expect(head!.length).toBeLessThanOrEqual(500)
+    expect(tail!.length).toBeLessThanOrEqual(500)
+    expect(head!.length).toBeGreaterThan(250)
+    expect(tail!.length).toBeGreaterThan(250)
+  })
+
+  test('falls back to a character cut when no line break is near the edge', () => {
+    const text = `${'a'.repeat(100)}\n${'b'.repeat(3000)}\n${'c'.repeat(100)}`
+    const out = truncateMiddle(text, 1000)
+    const [head, tail] = out.split(/\n\[\.\.\. \d+ chars truncated \.\.\.\]\n/)
+    expect(head!.length).toBe(500)
+    expect(tail!.length).toBe(500)
+  })
+
+  test('names the saved file in the marker, and degrades when saving fails', () => {
+    const text = 'z'.repeat(5000)
+    const seen: string[] = []
+    const linked = truncateMiddle(text, 100, (full) => {
+      seen.push(full)
+      return '/tmp/saved/tool_kiro_abc'
+    })
+    expect(seen).toEqual([text])
+    expect(linked).toContain(
+      '[... 4900 chars truncated; full content saved to /tmp/saved/tool_kiro_abc (use Read with offset/limit or Grep) ...]'
+    )
+    expect(truncateMiddle(text, 100, () => undefined)).toContain('[... 4900 chars truncated ...]')
+    expect(
+      truncateMiddle('short', 100, () => {
+        throw new Error('must not be called for short text')
+      })
+    ).toBe('short')
+  })
+})
+
+describe('saveTruncatedText', () => {
+  beforeEach(() => {
+    resetTruncatedOutputCache()
+    rmSync(join(dataHome, 'opencode'), { recursive: true, force: true })
+  })
+
+  test('writes under OpenCode tool-output with a content-hash name and mode 0600', () => {
+    expect(getToolOutputDir()).toBe(join(dataHome, 'opencode', 'tool-output'))
+    const path = saveTruncatedText('full output 1')!
+    expect(path.startsWith(join(dataHome, 'opencode', 'tool-output', 'tool_kiro_'))).toBe(true)
+    expect(readFileSync(path, 'utf8')).toBe('full output 1')
+    if (process.platform !== 'win32') expect(statSync(path).mode & 0o777).toBe(0o600)
+
+    expect(saveTruncatedText('full output 1')).toBe(path)
+    expect(saveTruncatedText('full output 2')).not.toBe(path)
+    expect(readdirSync(getToolOutputDir())).toHaveLength(2)
+  })
+
+  test('refreshes the mtime of an existing file instead of rewriting it', () => {
+    const path = saveTruncatedText('kept alive')!
+    const old = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000)
+    utimesSync(path, old, old)
+    resetTruncatedOutputCache()
+
+    expect(saveTruncatedText('kept alive')).toBe(path)
+    expect(Date.now() - statSync(path).mtimeMs).toBeLessThan(60_000)
+    expect(readFileSync(path, 'utf8')).toBe('kept alive')
+  })
+
+  test('rewrites a cached file that was cleaned up in the meantime', () => {
+    const path = saveTruncatedText('cleaned up')!
+    rmSync(path)
+    expect(saveTruncatedText('cleaned up')).toBe(path)
+    expect(existsSync(path)).toBe(true)
+  })
+
+  test('returns undefined when the directory cannot be created', () => {
+    writeFileSync(join(dataHome, 'opencode'), 'not a directory')
+    try {
+      expect(saveTruncatedText('cannot save')).toBeUndefined()
+    } finally {
+      rmSync(join(dataHome, 'opencode'), { force: true })
+    }
+  })
+})
+
+describe('compress_save_truncated_output', () => {
+  beforeEach(() => {
+    resetTruncatedOutputCache()
+    rmSync(join(dataHome, 'opencode'), { recursive: true, force: true })
+  })
+
+  function body() {
+    const messages: any[] = []
+    for (let k = 0; k < 60; k++) {
+      messages.push({ role: 'user', content: `question ${k}` })
+      messages.push({
+        role: 'assistant',
+        content: `checking ${k}`,
+        tool_calls: [
+          { id: `call_${k}`, type: 'function', function: { name: 'bash', arguments: '{"k":1}' } }
+        ]
+      })
+      messages.push({
+        role: 'tool',
+        tool_call_id: `call_${k}`,
+        content: `BEGIN ${k}\n${'o'.repeat(12000)}\nMIDDLE ${k}\n${'o'.repeat(12000)}\nEND ${k}`
+      })
+      messages.push({ role: 'assistant', content: `done ${k}` })
+    }
+    messages.push({ role: 'user', content: 'final' })
+    return { system: 'You are helpful', messages, tools: [] }
+  }
+  const headFor = (effort: Record<string, unknown> = {}) =>
+    (
+      transformToSdkRequest(body(), 'claude-opus-5-5', auth, false, 20000, undefined, {
+        compressOverflowHistory: true,
+        ...effort
+      }) as any
+    ).conversationState.history[0].userInputMessage.content as string
+
+  test('defaults to true in config and env', () => {
+    expect(DEFAULT_CONFIG.compress_save_truncated_output).toBe(true)
+    expect(KiroConfigSchema.parse({}).compress_save_truncated_output).toBe(true)
+    withEnvConfig('KIRO_COMPRESS_SAVE_TRUNCATED_OUTPUT', (loaded) => {
+      expect(loaded('false').compress_save_truncated_output).toBe(false)
+      expect(loaded('0').compress_save_truncated_output).toBe(false)
+      expect(loaded('true').compress_save_truncated_output).toBe(true)
+    })
+  })
+
+  test('links each truncated result to a file holding its full text', () => {
+    const head = headFor()
+    const paths = [...head.matchAll(/full content saved to (\S+) \(use Read/g)].map((m) => m[1]!)
+    expect(paths.length).toBeGreaterThan(0)
+    expect(head).toContain('BEGIN 0')
+    expect(head).toContain('END 0')
+    expect(head).not.toContain('MIDDLE 0')
+    const full = readFileSync(paths[0]!, 'utf8')
+    expect(full).toContain('MIDDLE 0')
+    expect(full.startsWith('BEGIN 0\n')).toBe(true)
+    expect(full.endsWith('\nEND 0')).toBe(true)
+    for (const path of paths) {
+      expect(path.startsWith(join(dataHome, 'opencode', 'tool-output', 'tool_kiro_'))).toBe(true)
+    }
+  })
+
+  test('renders the same transcript on every request', () => {
+    const first = headFor()
+    resetTruncatedOutputCache()
+    expect(headFor()).toBe(first)
+    expect(headFor()).toBe(first)
+  })
+
+  test('false keeps plain head+tail truncation and writes nothing', () => {
+    const head = headFor({ compressSaveTruncatedOutput: false })
+    expect(head).toMatch(/\[\.\.\. \d+ chars truncated \.\.\.\]/)
+    expect(head).not.toContain('full content saved to')
+    expect(existsSync(getToolOutputDir())).toBe(false)
+  })
+
+  test('drop mode never saves anything', () => {
+    transformToSdkRequest(body(), 'claude-opus-5-5', auth, false, 20000, undefined, {})
+    expect(existsSync(getToolOutputDir())).toBe(false)
   })
 })

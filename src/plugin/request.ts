@@ -26,6 +26,7 @@ import {
 } from './image-handler.js'
 import * as logger from './logger.js'
 import { resolveKiroModel } from './models.js'
+import { saveTruncatedText } from './truncated-output-store.js'
 import type {
   CodeWhispererRequest,
   Effort,
@@ -49,6 +50,7 @@ interface EffortConfig {
   maxHistoryEntries?: number
   compressToolResultMaxChars?: number
   compressToolInputMaxChars?: number
+  compressSaveTruncatedOutput?: boolean
 }
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
@@ -63,7 +65,8 @@ function buildCodeWhispererRequest(
   compressOverflowHistory = false,
   maxHistoryEntries: number = KIRO_CONSTANTS.MAX_HISTORY_ENTRIES,
   compressToolResultMaxChars: number = KIRO_CONSTANTS.COMPRESS_TOOL_RESULT_MAX_CHARS,
-  compressToolInputMaxChars: number = KIRO_CONSTANTS.COMPRESS_TOOL_INPUT_MAX_CHARS
+  compressToolInputMaxChars: number = KIRO_CONSTANTS.COMPRESS_TOOL_INPUT_MAX_CHARS,
+  compressSaveTruncatedOutput = true
 ): TransformResult {
   const req = typeof body === 'string' ? JSON.parse(body) : body
   const { messages, tools, system } = req
@@ -261,7 +264,8 @@ function buildCodeWhispererRequest(
   const fit = fitHistoryWithStage(history, maxHistoryEntries, {
     compressOverflow: compressOverflowHistory,
     toolResultMaxChars: compressToolResultMaxChars,
-    toolInputMaxChars: compressToolInputMaxChars
+    toolInputMaxChars: compressToolInputMaxChars,
+    saveTruncatedText: compressSaveTruncatedOutput ? saveTruncatedText : undefined
   })
   history = fit.history
   if (fit.stage !== 'none') {
@@ -382,7 +386,8 @@ export function transformToSdkRequest(
     effortConfig?.compressOverflowHistory ?? false,
     effortConfig?.maxHistoryEntries ?? KIRO_CONSTANTS.MAX_HISTORY_ENTRIES,
     effortConfig?.compressToolResultMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_RESULT_MAX_CHARS,
-    effortConfig?.compressToolInputMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_INPUT_MAX_CHARS
+    effortConfig?.compressToolInputMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_INPUT_MAX_CHARS,
+    effortConfig?.compressSaveTruncatedOutput ?? true
   )
 
   // Resolve effort level based on config and model capabilities

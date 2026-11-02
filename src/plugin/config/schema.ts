@@ -113,6 +113,10 @@ export const KiroConfigSchema = z.object({
   compress_tool_result_max_chars: z.number().int().min(0).max(1000000).default(8000),
   compress_tool_input_max_chars: z.number().int().min(0).max(1000000).default(4000),
 
+  // compress_overflow_history only: save the full text of each truncated transcript item
+  // under OpenCode's tool-output directory and point the truncation marker at it.
+  compress_save_truncated_output: z.boolean().default(true),
+
   // Expose Kiro's server-side web search as a `kiro_web_search` tool. Kiro runs
   // the search on its own infrastructure (billed as Kiro credits) and returns
   // structured results. Requires a Pro account (profileArn); on free Builder ID
@@ -142,5 +146,6 @@ export const DEFAULT_CONFIG: KiroConfig = {
   max_history_entries: 198,
   compress_tool_result_max_chars: 8000,
   compress_tool_input_max_chars: 4000,
+  compress_save_truncated_output: true,
   web_search_enabled: true
 }
