@@ -4,7 +4,7 @@ import {
   deduplicateToolCalls,
   parseBracketToolCalls
 } from '../infrastructure/transformers/tool-call-parser.js'
-import { getContextWindowSize } from './models.js'
+import { getContextWindowSize } from './model-registry.js'
 import { ParsedResponse, ToolCall } from './types'
 
 export function parseEventStream(rawResponse: string, model?: string): ParsedResponse {

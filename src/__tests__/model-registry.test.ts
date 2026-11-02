@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { SUPPORTED_MODELS } from '../constants.js'
 import type { Effort } from '../plugin/config/schema.js'
 import { budgetToEffort, THINKING_BUDGETS } from '../plugin/effort.js'
-import { buildModelRegistry } from '../plugin/model-registry.js'
+import { buildModelRegistry, getContextWindowSize } from '../plugin/model-registry.js'
 import { resolveKiroModel } from '../plugin/models.js'
 
 const registry = buildModelRegistry() as Record<string, any>
@@ -98,7 +98,11 @@ describe('model registry', () => {
   })
 
   test('carries limit and modalities through to both entries', () => {
-    expect(registry['claude-opus-5'].limit).toEqual({ context: 1000000, output: 64000 })
+    expect(registry['claude-opus-5'].limit).toEqual({
+      context: 1000000,
+      input: 1000000,
+      output: 64000
+    })
     expect(registry['claude-opus-5-thinking'].limit).toEqual(registry['claude-opus-5'].limit)
     expect(registry['claude-opus-5-thinking'].modalities).toEqual(
       registry['claude-opus-5'].modalities
@@ -106,11 +110,60 @@ describe('model registry', () => {
   })
 
   test('advertises the 5.5 generation', () => {
-    expect(registry['claude-opus-5-5'].limit).toEqual({ context: 1000000, output: 64000 })
-    expect(registry['claude-sonnet-5-5'].limit).toEqual({ context: 1000000, output: 64000 })
+    expect(registry['claude-opus-5-5'].limit).toEqual({
+      context: 1000000,
+      input: 1000000,
+      output: 64000
+    })
+    expect(registry['claude-sonnet-5-5'].limit).toEqual({
+      context: 1000000,
+      input: 1000000,
+      output: 64000
+    })
     // Unlike haiku-4.5, haiku-5.5 has a 1M context window
-    expect(registry['claude-haiku-5-5'].limit).toEqual({ context: 1000000, output: 64000 })
+    expect(registry['claude-haiku-5-5'].limit).toEqual({
+      context: 1000000,
+      input: 1000000,
+      output: 64000
+    })
     expect(registry['claude-haiku-5-5'].modalities).toEqual(registry['claude-haiku-4-5'].modalities)
     expect(registry['claude-haiku-5-5-thinking']).toBeUndefined()
+  })
+
+  describe('limit.input', () => {
+    test('is set on 1M models so OpenCode applies compaction.reserved', () => {
+      for (const [id, model] of Object.entries(registry)) {
+        if (model.limit.context !== 1000000) continue
+        expect(model.limit.input, id).toBe(1000000)
+      }
+    })
+
+    test('is absent on smaller windows, where a large reserved would zero the budget', () => {
+      for (const [id, model] of Object.entries(registry)) {
+        if (model.limit.context === 1000000) continue
+        expect(model.limit.input, id).toBeUndefined()
+      }
+    })
+  })
+
+  describe('getContextWindowSize', () => {
+    test('matches the advertised context window for every registry entry', () => {
+      for (const [id, model] of Object.entries(registry)) {
+        expect(getContextWindowSize(id), id).toBe(model.limit.context)
+      }
+    })
+
+    test('uses 1M for 5.5 models, not the legacy 200K default', () => {
+      expect(getContextWindowSize('claude-opus-5-5-thinking')).toBe(1000000)
+      expect(getContextWindowSize('claude-sonnet-5-5')).toBe(1000000)
+      expect(getContextWindowSize('claude-haiku-5-5')).toBe(1000000)
+      expect(getContextWindowSize('claude-haiku-4-5')).toBe(200000)
+    })
+
+    test('falls back for IDs outside the registry', () => {
+      expect(getContextWindowSize('claude-sonnet-4-5-1m-thinking')).toBe(1000000)
+      expect(getContextWindowSize('claude-3-7-sonnet')).toBe(200000)
+      expect(getContextWindowSize('')).toBe(200000)
+    })
   })
 })
