@@ -4,6 +4,7 @@ import { KIRO_CONSTANTS, buildUrl, extractRegionFromArn } from '../constants.js'
 import {
   buildHistory,
   extractToolNamesFromHistory,
+  fitHistoryWithStage,
   historyHasToolCalling,
   injectSystemPrompt
 } from '../infrastructure/transformers/history-builder.js'
@@ -23,6 +24,7 @@ import {
   extractAllImages,
   extractTextFromParts
 } from './image-handler.js'
+import * as logger from './logger.js'
 import { resolveKiroModel } from './models.js'
 import type {
   CodeWhispererRequest,
@@ -43,6 +45,10 @@ interface TransformResult {
 interface EffortConfig {
   effort?: Effort
   autoEffortMapping?: boolean
+  compressOverflowHistory?: boolean
+  maxHistoryEntries?: number
+  compressToolResultMaxChars?: number
+  compressToolInputMaxChars?: number
 }
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
@@ -53,7 +59,11 @@ function buildCodeWhispererRequest(
   auth: KiroAuthDetails,
   think = false,
   budget = 20000,
-  showToast?: ToastFunction
+  showToast?: ToastFunction,
+  compressOverflowHistory = false,
+  maxHistoryEntries: number = KIRO_CONSTANTS.MAX_HISTORY_ENTRIES,
+  compressToolResultMaxChars: number = KIRO_CONSTANTS.COMPRESS_TOOL_RESULT_MAX_CHARS,
+  compressToolInputMaxChars: number = KIRO_CONSTANTS.COMPRESS_TOOL_INPUT_MAX_CHARS
 ): TransformResult {
   const req = typeof body === 'string' ? JSON.parse(body) : body
   const { messages, tools, system } = req
@@ -247,6 +257,19 @@ function buildCodeWhispererRequest(
     finalCurTrs.push(...orphanedTrs.map((o) => o.result))
   }
 
+  const builtLength = history.length
+  const fit = fitHistoryWithStage(history, maxHistoryEntries, {
+    compressOverflow: compressOverflowHistory,
+    toolResultMaxChars: compressToolResultMaxChars,
+    toolInputMaxChars: compressToolInputMaxChars
+  })
+  history = fit.history
+  if (fit.stage !== 'none') {
+    logger.log(
+      `Kiro history compacted to fit entry limit (${fit.stage}): ${builtLength} -> ${history.length}`
+    )
+  }
+
   // CodeWhisperer returns the names it received. Rewrite historical tool calls with the
   // same per-request registry used by current tool specifications so replay stays valid.
   for (const entry of history) {
@@ -355,7 +378,11 @@ export function transformToSdkRequest(
     auth,
     think,
     budget,
-    showToast
+    showToast,
+    effortConfig?.compressOverflowHistory ?? false,
+    effortConfig?.maxHistoryEntries ?? KIRO_CONSTANTS.MAX_HISTORY_ENTRIES,
+    effortConfig?.compressToolResultMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_RESULT_MAX_CHARS,
+    effortConfig?.compressToolInputMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_INPUT_MAX_CHARS
   )
 
   // Resolve effort level based on config and model capabilities

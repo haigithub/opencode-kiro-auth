@@ -97,6 +97,22 @@ export const KiroConfigSchema = z.object({
    */
   auto_effort_mapping: z.boolean().default(true),
 
+  // When conversationState.history still exceeds Kiro's entry limit after folding
+  // tool loops, condense the oldest turns into a text transcript inside the first
+  // user turn instead of dropping them. Off by default (drop the oldest turns).
+  compress_overflow_history: z.boolean().default(false),
+
+  // Upper bound on conversationState.history entries sent to Kiro. Kiro rejects 200+
+  // entries as "Input is too long"; 198 is the largest verified size. Raise only if
+  // Kiro raises its limit. Mirrors KIRO_CONSTANTS.MAX_HISTORY_ENTRIES.
+  max_history_entries: z.number().int().min(10).max(10000).default(198),
+
+  // compress_overflow_history only: per-item character caps for old tool results and
+  // tool call inputs written into the transcript. Longer text keeps its head and tail
+  // around a truncation marker. 0 disables the cap.
+  compress_tool_result_max_chars: z.number().int().min(0).max(1000000).default(8000),
+  compress_tool_input_max_chars: z.number().int().min(0).max(1000000).default(4000),
+
   // Expose Kiro's server-side web search as a `kiro_web_search` tool. Kiro runs
   // the search on its own infrastructure (billed as Kiro credits) and returns
   // structured results. Requires a Pro account (profileArn); on free Builder ID
@@ -122,5 +138,9 @@ export const DEFAULT_CONFIG: KiroConfig = {
   auto_sync_kiro_cli: true,
   enable_log_api_request: false,
   auto_effort_mapping: true,
+  compress_overflow_history: false,
+  max_history_entries: 198,
+  compress_tool_result_max_chars: 8000,
+  compress_tool_input_max_chars: 4000,
   web_search_enabled: true
 }

@@ -88,7 +88,8 @@ reachable from a budget alone:
 | `<= 98304` | `xhigh` |
 | `> 98304` | `max` |
 
-`xhigh` is only available on opus-4.7, opus-4.8, opus-5 and sonnet-5. Those models
+`xhigh` is only available on opus-4.7, opus-4.8, opus-5, opus-5.5, sonnet-5 and
+sonnet-5.5. Those models
 get a five-variant ladder; the rest get four, and a budget in the `xhigh` band is
 clamped to `max`.
 
@@ -218,6 +219,10 @@ Edit `~/.config/opencode/kiro.json`:
   "usage_sync_max_retries": 3,
   "usage_tracking_enabled": true,
   "auto_effort_mapping": true,
+  "compress_overflow_history": false,
+  "max_history_entries": 198,
+  "compress_tool_result_max_chars": 8000,
+  "compress_tool_input_max_chars": 4000,
   "enable_log_api_request": false
 }
 ```
@@ -244,6 +249,23 @@ Edit `~/.config/opencode/kiro.json`:
 - `usage_tracking_enabled`: Enable usage tracking and toast notifications.
 - `auto_effort_mapping`: Automatically map OpenCode thinking budgets to Kiro effort
   levels for supported models (default: `true`).
+- `compress_overflow_history`: Kiro rejects conversations with 200 or more history
+  entries. The plugin first folds older tool loops; if that is not enough, it drops the
+  oldest turns (default, `false`), carrying over the reply to the first user turn (where
+  OpenCode keeps its compaction summary). Set to `true` to condense those turns into a
+  text transcript inside the first user turn instead, so their content stays visible to
+  the model. Env override: `KIRO_COMPRESS_OVERFLOW_HISTORY`.
+- `max_history_entries`: Maximum history entries sent to Kiro before folding, dropping or
+  compressing kicks in (10-10000, default `198`). Kiro currently rejects 200 or more;
+  lower it for extra headroom, raise it only if Kiro raises its limit. Env override:
+  `KIRO_MAX_HISTORY_ENTRIES` (values outside 10-10000 or non-integers are ignored with a
+  warning).
+- `compress_tool_result_max_chars` / `compress_tool_input_max_chars`: Only used with
+  `compress_overflow_history`. Caps each old tool result (default `8000`) and tool call
+  input (default `4000`) written into the transcript, keeping the head and tail around a
+  `[... N chars truncated ...]` marker. Recent turns kept as real entries are never
+  truncated. `0` disables the cap (0-1000000). Env overrides:
+  `KIRO_COMPRESS_TOOL_RESULT_MAX_CHARS`, `KIRO_COMPRESS_TOOL_INPUT_MAX_CHARS`.
 - `enable_log_api_request`: Enable detailed API request logging. Request logs
   include the resolved `additionalModelRequestFields`, so this is how you confirm
   which effort level actually went out on the wire.
