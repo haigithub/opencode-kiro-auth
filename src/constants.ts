@@ -46,7 +46,10 @@ export const KIRO_CONSTANTS = {
   SDK_VERSION: '3.738.0',
   SDK_VERSION_USAGE: '3.0.0',
   CHAT_TRIGGER_TYPE_MANUAL: 'MANUAL',
-  ORIGIN_AI_EDITOR: 'AI_EDITOR'
+  ORIGIN_AI_EDITOR: 'AI_EDITOR',
+  // Kiro rejects conversationState.history with 200+ entries as CONTENT_LENGTH_EXCEEDS_THRESHOLD
+  // ("Input is too long"), regardless of byte or token size. 198 is the largest verified size.
+  MAX_HISTORY_ENTRIES: 198
 }
 
 export const MODEL_MAPPING: Record<string, string> = {

@@ -219,6 +219,219 @@ export function injectSystemPrompt(
   return history
 }
 
+const TOOL_RESULTS_PLACEHOLDER = 'Tool results provided.'
+const TOOL_CONTINUES_PLACEHOLDER = '[system: tool calling continues]'
+const OMITTED_HISTORY_NOTE =
+  '[system: earlier conversation turns were omitted to fit the Kiro history limit]'
+
+function isToolCallPair(history: CodeWhispererMessage[], i: number): boolean {
+  const asst = history[i]?.assistantResponseMessage
+  const user = history[i + 1]?.userInputMessage
+  return !!(
+    asst?.toolUses?.length &&
+    user?.userInputMessageContext?.toolResults?.length &&
+    !user.images?.length
+  )
+}
+
+function isPlaceholderToolResultTurn(entry: CodeWhispererMessage | undefined): boolean {
+  const content = entry?.userInputMessage?.content?.trim() ?? ''
+  return content === '' || content === TOOL_RESULTS_PLACEHOLDER
+}
+
+function mergeToolCallPairs(
+  first: [CodeWhispererMessage, CodeWhispererMessage],
+  second: [CodeWhispererMessage, CodeWhispererMessage]
+): [CodeWhispererMessage, CodeWhispererMessage] {
+  const [asstA, userA] = first
+  const [asstB, userB] = second
+  const textB = asstB.assistantResponseMessage!.content?.trim() ?? ''
+  const contentA = asstA.assistantResponseMessage!.content ?? ''
+  const content =
+    textB && textB !== TOOL_CONTINUES_PLACEHOLDER
+      ? contentA
+        ? `${contentA}\n\n${textB}`
+        : textB
+      : contentA
+  return [
+    {
+      assistantResponseMessage: {
+        content,
+        toolUses: [
+          ...asstA.assistantResponseMessage!.toolUses!,
+          ...asstB.assistantResponseMessage!.toolUses!
+        ]
+      }
+    },
+    {
+      userInputMessage: {
+        ...userB.userInputMessage!,
+        userInputMessageContext: {
+          ...userB.userInputMessage!.userInputMessageContext,
+          toolResults: [
+            ...userA.userInputMessage!.userInputMessageContext!.toolResults!,
+            ...userB.userInputMessage!.userInputMessageContext!.toolResults!
+          ]
+        }
+      }
+    }
+  ]
+}
+
+/**
+ * Fold consecutive tool-call/tool-result pairs (oldest first) into single pairs carrying
+ * several toolUses/toolResults. Lossless for content: only the per-step interleaving of
+ * older tool loops is flattened. Recent pairs are left untouched once the limit is met.
+ */
+function foldToolCallPairs(history: CodeWhispererMessage[], maxEntries: number) {
+  const result: CodeWhispererMessage[] = []
+  let excess = history.length - maxEntries
+  let i = 0
+  while (i < history.length) {
+    if (excess > 0 && i > 0 && isToolCallPair(history, i)) {
+      let pair: [CodeWhispererMessage, CodeWhispererMessage] = [history[i]!, history[i + 1]!]
+      i += 2
+      while (excess > 0 && isPlaceholderToolResultTurn(pair[1]) && isToolCallPair(history, i)) {
+        pair = mergeToolCallPairs(pair, [history[i]!, history[i + 1]!])
+        i += 2
+        excess -= 2
+      }
+      result.push(...pair)
+    } else {
+      result.push(history[i]!)
+      i++
+    }
+  }
+  return result
+}
+
+/**
+ * Drop the oldest turns while keeping the first user message (it carries the injected
+ * system prompt). The kept tail starts at an assistant entry so every retained toolResult
+ * still follows the assistant toolUses it answers.
+ */
+function dropOldestTurns(history: CodeWhispererMessage[], maxEntries: number) {
+  const head = history[0]?.userInputMessage ? [history[0]] : []
+  let start = history.length - (maxEntries - head.length)
+  while (start < history.length && !history[start]?.assistantResponseMessage) start++
+  if (start >= history.length) return history.slice(-maxEntries)
+
+  const first = history[start]!.assistantResponseMessage!
+  const tail = history.slice(start + 1)
+  return [
+    ...head,
+    {
+      assistantResponseMessage: {
+        ...first,
+        content: first.content
+          ? `${OMITTED_HISTORY_NOTE}\n\n${first.content}`
+          : OMITTED_HISTORY_NOTE
+      }
+    },
+    ...tail
+  ]
+}
+
+const TRANSCRIPT_OPEN =
+  '<earlier_conversation note="Older turns condensed into text to fit the Kiro history limit. ' +
+  'Tool calls listed here already ran; do not repeat them or imitate this format.">'
+const TRANSCRIPT_CLOSE = '</earlier_conversation>'
+const PLACEHOLDER_CONTENTS = new Set([
+  TOOL_RESULTS_PLACEHOLDER,
+  TOOL_CONTINUES_PLACEHOLDER,
+  '[system: conversation continues]'
+])
+
+function transcriptText(content: string | undefined): string {
+  const text = (content ?? '').replace(/<thinking>[\s\S]*?<\/thinking>/g, '').trim()
+  return PLACEHOLDER_CONTENTS.has(text) ? '' : text
+}
+
+function stringifyToolInput(input: unknown): string {
+  if (typeof input === 'string') return input
+  try {
+    return JSON.stringify(input ?? {})
+  } catch {
+    return String(input)
+  }
+}
+
+function renderTranscript(entries: CodeWhispererMessage[]): string {
+  const lines: string[] = []
+  for (const entry of entries) {
+    const asst = entry.assistantResponseMessage
+    if (asst) {
+      const text = transcriptText(asst.content)
+      if (text) lines.push(`Assistant: ${text}`)
+      for (const use of asst.toolUses ?? []) {
+        lines.push(
+          `Assistant tool call ${use.name} (id ${use.toolUseId}) input: ${stringifyToolInput(use.input)}`
+        )
+      }
+      continue
+    }
+    const user = entry.userInputMessage
+    if (!user) continue
+    for (const result of user.userInputMessageContext?.toolResults ?? []) {
+      const output = result.content.map((c) => c.text ?? '').join('\n')
+      const status = result.status && result.status !== 'success' ? ` [${result.status}]` : ''
+      lines.push(`Tool result (id ${result.toolUseId})${status}: ${output}`)
+    }
+    const text = transcriptText(user.content)
+    if (text) lines.push(`User: ${text}`)
+    if (user.images?.length) lines.push(`User: [${user.images.length} image(s) omitted]`)
+  }
+  return lines.join('\n\n')
+}
+
+/**
+ * Like dropOldestTurns, but the removed turns are rendered as a text transcript
+ * appended to the first user turn, so their content stays visible to the model.
+ * Tool calls become plain text: Kiro requires every toolResult to follow its
+ * toolUses, which cannot hold once the turns no longer exist as entries.
+ */
+function compressOldestTurns(history: CodeWhispererMessage[], maxEntries: number) {
+  const head = history[0]?.userInputMessage
+  if (!head) return dropOldestTurns(history, maxEntries)
+  let start = history.length - (maxEntries - 1)
+  while (start < history.length && !history[start]?.assistantResponseMessage) start++
+  if (start >= history.length) return dropOldestTurns(history, maxEntries)
+
+  const transcript = renderTranscript(history.slice(1, start))
+  const content = transcript
+    ? `${head.content}\n\n${TRANSCRIPT_OPEN}\n${transcript}\n${TRANSCRIPT_CLOSE}`
+    : head.content
+  return [{ userInputMessage: { ...head, content } }, ...history.slice(start)]
+}
+
+export type HistoryFitStage = 'none' | 'fold' | 'drop' | 'compress'
+
+export interface HistoryFitOptions {
+  compressOverflow?: boolean
+}
+
+export function fitHistoryWithStage(
+  history: CodeWhispererMessage[],
+  maxEntries: number = KIRO_CONSTANTS.MAX_HISTORY_ENTRIES,
+  options: HistoryFitOptions = {}
+): { history: CodeWhispererMessage[]; stage: HistoryFitStage } {
+  if (history.length <= maxEntries) return { history, stage: 'none' }
+  const folded = foldToolCallPairs(history, maxEntries)
+  if (folded.length <= maxEntries) return { history: folded, stage: 'fold' }
+  if (options.compressOverflow) {
+    return { history: compressOldestTurns(folded, maxEntries), stage: 'compress' }
+  }
+  return { history: dropOldestTurns(folded, maxEntries), stage: 'drop' }
+}
+
+export function fitHistoryToEntryLimit(
+  history: CodeWhispererMessage[],
+  maxEntries: number = KIRO_CONSTANTS.MAX_HISTORY_ENTRIES,
+  options: HistoryFitOptions = {}
+): CodeWhispererMessage[] {
+  return fitHistoryWithStage(history, maxEntries, options).history
+}
+
 export function historyHasToolCalling(history: CodeWhispererMessage[]): boolean {
   return history.some(
     (h) =>

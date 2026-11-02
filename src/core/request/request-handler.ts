@@ -260,7 +260,9 @@ export class RequestHandler {
   ): SdkPreparedRequest {
     return transformToSdkRequest(body, model, auth, think, budget, showToast, {
       effort: this.config.effort,
-      autoEffortMapping: this.config.auto_effort_mapping
+      autoEffortMapping: this.config.auto_effort_mapping,
+      compressOverflowHistory: this.config.compress_overflow_history,
+      maxHistoryEntries: this.config.max_history_entries
     })
   }
 
