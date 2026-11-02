@@ -47,6 +47,8 @@ interface EffortConfig {
   autoEffortMapping?: boolean
   compressOverflowHistory?: boolean
   maxHistoryEntries?: number
+  compressToolResultMaxChars?: number
+  compressToolInputMaxChars?: number
 }
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
@@ -59,7 +61,9 @@ function buildCodeWhispererRequest(
   budget = 20000,
   showToast?: ToastFunction,
   compressOverflowHistory = false,
-  maxHistoryEntries: number = KIRO_CONSTANTS.MAX_HISTORY_ENTRIES
+  maxHistoryEntries: number = KIRO_CONSTANTS.MAX_HISTORY_ENTRIES,
+  compressToolResultMaxChars: number = KIRO_CONSTANTS.COMPRESS_TOOL_RESULT_MAX_CHARS,
+  compressToolInputMaxChars: number = KIRO_CONSTANTS.COMPRESS_TOOL_INPUT_MAX_CHARS
 ): TransformResult {
   const req = typeof body === 'string' ? JSON.parse(body) : body
   const { messages, tools, system } = req
@@ -255,7 +259,9 @@ function buildCodeWhispererRequest(
 
   const builtLength = history.length
   const fit = fitHistoryWithStage(history, maxHistoryEntries, {
-    compressOverflow: compressOverflowHistory
+    compressOverflow: compressOverflowHistory,
+    toolResultMaxChars: compressToolResultMaxChars,
+    toolInputMaxChars: compressToolInputMaxChars
   })
   history = fit.history
   if (fit.stage !== 'none') {
@@ -374,7 +380,9 @@ export function transformToSdkRequest(
     budget,
     showToast,
     effortConfig?.compressOverflowHistory ?? false,
-    effortConfig?.maxHistoryEntries ?? KIRO_CONSTANTS.MAX_HISTORY_ENTRIES
+    effortConfig?.maxHistoryEntries ?? KIRO_CONSTANTS.MAX_HISTORY_ENTRIES,
+    effortConfig?.compressToolResultMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_RESULT_MAX_CHARS,
+    effortConfig?.compressToolInputMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_INPUT_MAX_CHARS
   )
 
   // Resolve effort level based on config and model capabilities

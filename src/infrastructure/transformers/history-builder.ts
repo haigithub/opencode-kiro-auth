@@ -306,6 +306,18 @@ function foldToolCallPairs(history: CodeWhispererMessage[], maxEntries: number) 
 }
 
 /**
+ * Text of the reply to the first user turn when that reply is about to be dropped and
+ * carries no tool calls. After OpenCode compacts a session this entry holds the summary,
+ * so drop mode carries it over instead of losing it.
+ */
+function droppedLeadReply(history: CodeWhispererMessage[], start: number): string {
+  if (start <= 1) return ''
+  const reply = history[1]?.assistantResponseMessage
+  if (!reply || reply.toolUses?.length) return ''
+  return transcriptText(reply.content)
+}
+
+/**
  * Drop the oldest turns while keeping the first user message (it carries the injected
  * system prompt). The kept tail starts at an assistant entry so every retained toolResult
  * still follows the assistant toolUses it answers.
@@ -314,22 +326,14 @@ function dropOldestTurns(history: CodeWhispererMessage[], maxEntries: number) {
   const head = history[0]?.userInputMessage ? [history[0]] : []
   let start = history.length - (maxEntries - head.length)
   while (start < history.length && !history[start]?.assistantResponseMessage) start++
-  if (start >= history.length) return history.slice(-maxEntries)
+  // Unreachable for alternating histories. Sending the input unchanged makes Kiro reject it
+  // visibly instead of silently losing the system prompt or orphaning a toolResult.
+  if (start >= history.length) return history
 
   const first = history[start]!.assistantResponseMessage!
-  const tail = history.slice(start + 1)
-  return [
-    ...head,
-    {
-      assistantResponseMessage: {
-        ...first,
-        content: first.content
-          ? `${OMITTED_HISTORY_NOTE}\n\n${first.content}`
-          : OMITTED_HISTORY_NOTE
-      }
-    },
-    ...tail
-  ]
+  const lead = head.length ? droppedLeadReply(history, start) : ''
+  const content = [lead, OMITTED_HISTORY_NOTE, first.content].filter(Boolean).join('\n\n')
+  return [...head, { assistantResponseMessage: { ...first, content } }, ...history.slice(start + 1)]
 }
 
 const TRANSCRIPT_OPEN =
@@ -356,7 +360,38 @@ function stringifyToolInput(input: unknown): string {
   }
 }
 
-function renderTranscript(entries: CodeWhispererMessage[]): string {
+function escapeTranscriptTags(text: string): string {
+  return text.replace(/<(\/?earlier_conversation)/gi, '&lt;$1')
+}
+
+/**
+ * Keep the head and tail of text longer than maxChars around a truncation marker.
+ * maxChars <= 0 (or non-finite) disables the cap. Never splits a surrogate pair.
+ */
+export function truncateMiddle(text: string, maxChars: number): string {
+  if (!(maxChars > 0) || !Number.isFinite(maxChars) || text.length <= maxChars) return text
+  let headEnd = Math.ceil(maxChars / 2)
+  let tailStart = text.length - Math.floor(maxChars / 2)
+  if (isHighSurrogate(text.charCodeAt(headEnd - 1))) headEnd--
+  if (isLowSurrogate(text.charCodeAt(tailStart))) tailStart++
+  const omitted = tailStart - headEnd
+  return `${text.slice(0, headEnd)}\n[... ${omitted} chars truncated ...]\n${text.slice(tailStart)}`
+}
+
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff
+}
+
+function isLowSurrogate(code: number): boolean {
+  return code >= 0xdc00 && code <= 0xdfff
+}
+
+interface TranscriptLimits {
+  toolResultMaxChars: number
+  toolInputMaxChars: number
+}
+
+function renderTranscript(entries: CodeWhispererMessage[], limits: TranscriptLimits): string {
   const lines: string[] = []
   for (const entry of entries) {
     const asst = entry.assistantResponseMessage
@@ -365,7 +400,7 @@ function renderTranscript(entries: CodeWhispererMessage[]): string {
       if (text) lines.push(`Assistant: ${text}`)
       for (const use of asst.toolUses ?? []) {
         lines.push(
-          `Assistant tool call ${use.name} (id ${use.toolUseId}) input: ${stringifyToolInput(use.input)}`
+          `Assistant tool call ${use.name} (id ${use.toolUseId}) input: ${truncateMiddle(stringifyToolInput(use.input), limits.toolInputMaxChars)}`
         )
       }
       continue
@@ -373,7 +408,10 @@ function renderTranscript(entries: CodeWhispererMessage[]): string {
     const user = entry.userInputMessage
     if (!user) continue
     for (const result of user.userInputMessageContext?.toolResults ?? []) {
-      const output = result.content.map((c) => c.text ?? '').join('\n')
+      const output = truncateMiddle(
+        result.content.map((c) => c.text ?? '').join('\n'),
+        limits.toolResultMaxChars
+      )
       const status = result.status && result.status !== 'success' ? ` [${result.status}]` : ''
       lines.push(`Tool result (id ${result.toolUseId})${status}: ${output}`)
     }
@@ -390,14 +428,18 @@ function renderTranscript(entries: CodeWhispererMessage[]): string {
  * Tool calls become plain text: Kiro requires every toolResult to follow its
  * toolUses, which cannot hold once the turns no longer exist as entries.
  */
-function compressOldestTurns(history: CodeWhispererMessage[], maxEntries: number) {
+function compressOldestTurns(
+  history: CodeWhispererMessage[],
+  maxEntries: number,
+  limits: TranscriptLimits
+) {
   const head = history[0]?.userInputMessage
   if (!head) return dropOldestTurns(history, maxEntries)
   let start = history.length - (maxEntries - 1)
   while (start < history.length && !history[start]?.assistantResponseMessage) start++
   if (start >= history.length) return dropOldestTurns(history, maxEntries)
 
-  const transcript = renderTranscript(history.slice(1, start))
+  const transcript = escapeTranscriptTags(renderTranscript(history.slice(1, start), limits))
   const content = transcript
     ? `${head.content}\n\n${TRANSCRIPT_OPEN}\n${transcript}\n${TRANSCRIPT_CLOSE}`
     : head.content
@@ -408,18 +450,36 @@ export type HistoryFitStage = 'none' | 'fold' | 'drop' | 'compress'
 
 export interface HistoryFitOptions {
   compressOverflow?: boolean
+  /** Compress mode: max chars per old tool result in the transcript (0 = no cap). */
+  toolResultMaxChars?: number
+  /** Compress mode: max chars per old tool call input in the transcript (0 = no cap). */
+  toolInputMaxChars?: number
+}
+
+// Smallest limit that still leaves the system-prompt turn plus one assistant entry.
+const MIN_HISTORY_ENTRIES = 3
+
+function normalizeMaxEntries(maxEntries: number): number {
+  if (!Number.isFinite(maxEntries)) return KIRO_CONSTANTS.MAX_HISTORY_ENTRIES
+  return Math.max(MIN_HISTORY_ENTRIES, Math.floor(maxEntries))
 }
 
 export function fitHistoryWithStage(
   history: CodeWhispererMessage[],
-  maxEntries: number = KIRO_CONSTANTS.MAX_HISTORY_ENTRIES,
+  requestedMaxEntries: number = KIRO_CONSTANTS.MAX_HISTORY_ENTRIES,
   options: HistoryFitOptions = {}
 ): { history: CodeWhispererMessage[]; stage: HistoryFitStage } {
+  const maxEntries = normalizeMaxEntries(requestedMaxEntries)
   if (history.length <= maxEntries) return { history, stage: 'none' }
   const folded = foldToolCallPairs(history, maxEntries)
   if (folded.length <= maxEntries) return { history: folded, stage: 'fold' }
   if (options.compressOverflow) {
-    return { history: compressOldestTurns(folded, maxEntries), stage: 'compress' }
+    const limits = {
+      toolResultMaxChars:
+        options.toolResultMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_RESULT_MAX_CHARS,
+      toolInputMaxChars: options.toolInputMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_INPUT_MAX_CHARS
+    }
+    return { history: compressOldestTurns(folded, maxEntries, limits), stage: 'compress' }
   }
   return { history: dropOldestTurns(folded, maxEntries), stage: 'drop' }
 }

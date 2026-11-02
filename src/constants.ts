@@ -49,7 +49,11 @@ export const KIRO_CONSTANTS = {
   ORIGIN_AI_EDITOR: 'AI_EDITOR',
   // Kiro rejects conversationState.history with 200+ entries as CONTENT_LENGTH_EXCEEDS_THRESHOLD
   // ("Input is too long"), regardless of byte or token size. 198 is the largest verified size.
-  MAX_HISTORY_ENTRIES: 198
+  MAX_HISTORY_ENTRIES: 198,
+  // Per-item character caps for tool results / tool inputs rendered into the compress-mode
+  // transcript. 0 disables the cap.
+  COMPRESS_TOOL_RESULT_MAX_CHARS: 8000,
+  COMPRESS_TOOL_INPUT_MAX_CHARS: 4000
 }
 
 export const MODEL_MAPPING: Record<string, string> = {
