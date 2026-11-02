@@ -1,6 +1,49 @@
 import { createHash } from 'node:crypto'
 import { homedir, platform } from 'node:os'
 import { join } from 'node:path'
+import { extractRegionFromArn, normalizeRegion } from '../../constants'
+import type { KiroRegion } from '../types'
+
+/**
+ * Resolve the two regions a kiro-cli token needs.
+ *
+ * - `serviceRegion`: where the Q / CodeWhisperer API lives. The profile ARN is
+ *   authoritative; kiro-cli's `region` field is only a fallback.
+ * - `oidcRegion`: where the SSO OIDC client was registered, which is the region
+ *   refresh calls must go to. kiro-cli stores exactly this in `region`. It can
+ *   differ from the service region (e.g. IdC in ap-southeast-1 with a
+ *   us-east-1 profile), and refreshing against the wrong one fails with
+ *   `invalid_request`.
+ */
+export function resolveCliRegions(
+  data: { region?: unknown } | null | undefined,
+  profileArn: string | undefined
+): { serviceRegion: KiroRegion; oidcRegion: KiroRegion } {
+  const cliRegion = typeof data?.region === 'string' ? data.region : undefined
+  return {
+    serviceRegion: extractRegionFromArn(profileArn) || normalizeRegion(cliRegion),
+    oidcRegion: normalizeRegion(cliRegion)
+  }
+}
+
+/**
+ * True when the stored account already holds credentials at least as fresh as
+ * kiro-cli's and its routing is correct, so re-importing would be a no-op.
+ */
+export function isCliImportRedundant(
+  existing: { is_healthy: number; expires_at: number; oidc_region?: string | null } | undefined,
+  cliExpiresAt: number,
+  oidcRegion: string,
+  now = Date.now()
+): boolean {
+  if (!existing) return false
+  return (
+    existing.is_healthy === 1 &&
+    existing.expires_at >= cliExpiresAt &&
+    existing.expires_at > now &&
+    existing.oidc_region === oidcRegion
+  )
+}
 
 export function getCliDbPath(): string {
   const override = process.env.KIROCLI_DB_PATH
