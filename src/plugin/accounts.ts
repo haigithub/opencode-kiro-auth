@@ -222,6 +222,11 @@ export class AccountManager {
       acc.refreshToken = p.refreshToken
       if (p.profileArn) acc.profileArn = p.profileArn
       if (p.clientId) acc.clientId = p.clientId
+      if (p.clientSecret) acc.clientSecret = p.clientSecret
+      // Routing must follow the credentials: a refresh token is only valid at
+      // the OIDC region its client was registered in.
+      if (auth.region) acc.region = auth.region
+      if (auth.oidcRegion) acc.oidcRegion = auth.oidcRegion
       acc.failCount = 0
       acc.isHealthy = true
       delete acc.unhealthyReason
