@@ -210,6 +210,11 @@ function applyEnvOverrides(config: KiroConfig): KiroConfig {
       'compress_tool_input_max_chars',
       env.KIRO_COMPRESS_TOOL_INPUT_MAX_CHARS,
       config.compress_tool_input_max_chars
+    ),
+
+    compress_save_truncated_output: parseBooleanEnv(
+      env.KIRO_COMPRESS_SAVE_TRUNCATED_OUTPUT,
+      config.compress_save_truncated_output
     )
   }
 }
