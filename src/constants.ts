@@ -50,6 +50,9 @@ export const KIRO_CONSTANTS = {
   // Kiro rejects conversationState.history with 200+ entries as CONTENT_LENGTH_EXCEEDS_THRESHOLD
   // ("Input is too long"), regardless of byte or token size. 198 is the largest verified size.
   MAX_HISTORY_ENTRIES: 198,
+  // Low-water mark: once history exceeds MAX_HISTORY_ENTRIES it is trimmed down to this
+  // size, so the trim boundary (and the cacheable prompt prefix) holds for many turns.
+  HISTORY_TRIM_TARGET: 150,
   // Per-item character caps for tool results / tool inputs rendered into the compress-mode
   // transcript. 0 disables the cap.
   COMPRESS_TOOL_RESULT_MAX_CHARS: 8000,

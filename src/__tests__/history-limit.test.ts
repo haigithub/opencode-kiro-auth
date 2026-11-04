@@ -969,3 +969,122 @@ describe('compress_save_truncated_output', () => {
     expect(existsSync(getToolOutputDir())).toBe(false)
   })
 })
+
+describe('history_trim_target hysteresis', () => {
+  type Turn = 'chat' | 'tool'
+  function grow(turns: number, kind: Turn): CodeWhispererMessage[] {
+    const history: CodeWhispererMessage[] = [user('SYSTEM\n\nfirst')]
+    for (let i = 0; i < turns; i++) {
+      if (kind === 'tool') {
+        history.push(asst(i % 5 === 0 ? `step ${i}` : '', [`t${i}`]))
+        history.push(user(i % 5 === 4 ? `note ${i}` : 'Tool results provided.', [`t${i}`]))
+      } else {
+        history.push(asst(`answer ${i}`, [`t${i}`]))
+        history.push(user(`question ${i}`, [`t${i}`]))
+      }
+    }
+    return history
+  }
+
+  test('defaults to 150 and mirrors KIRO_CONSTANTS', () => {
+    expect(DEFAULT_CONFIG.history_trim_target).toBe(150)
+    expect(KiroConfigSchema.parse({}).history_trim_target).toBe(150)
+    expect(KIRO_CONSTANTS.HISTORY_TRIM_TARGET).toBe(150)
+    expect(KiroConfigSchema.safeParse({ history_trim_target: 9 }).success).toBe(false)
+    expect(KiroConfigSchema.safeParse({ history_trim_target: 150.5 }).success).toBe(false)
+    withEnvConfig('KIRO_HISTORY_TRIM_TARGET', (loaded) => {
+      expect(loaded('120').history_trim_target).toBe(120)
+      for (const bad of ['', '0', '9', '1.5', 'abc']) {
+        expect(loaded(bad).history_trim_target).toBe(150)
+      }
+    })
+  })
+
+  test.each([
+    ['drop', 'chat', false],
+    ['compress', 'chat', true],
+    ['fold', 'tool', false],
+    ['fold then compress', 'tool', true]
+  ] as const)('%s: trimmed size lands between target and limit', (_name, kind, compress) => {
+    for (let turns = 100; turns <= 400; turns++) {
+      const fit = fitHistoryWithStage(grow(turns, kind), 198, {
+        compressOverflow: compress,
+        targetEntries: 150
+      })
+      expect(fit.history.length).toBeLessThanOrEqual(198)
+      if (fit.stage !== 'none' && fit.stage !== 'fold') {
+        expect(fit.history.length).toBeGreaterThanOrEqual(148)
+      }
+      assertWellFormed(fit.history)
+    }
+  })
+
+  test.each([
+    ['drop', 'chat', false],
+    ['compress', 'chat', true],
+    ['fold', 'tool', false]
+  ] as const)(
+    '%s: each request extends the previous one until the next step',
+    (_name, kind, compress) => {
+      const fitAt = (turns: number) =>
+        fitHistoryWithStage(grow(turns, kind), 198, {
+          compressOverflow: compress,
+          targetEntries: 150
+        }).history
+      let extended = 0
+      let rebased = 0
+      // Stop before the fold-only history runs out of foldable pairs (~390 turns), where
+      // each extra turn folds one more pair.
+      for (let turns = 100; turns < 380; turns++) {
+        const before = fitAt(turns)
+        const after = fitAt(turns + 1)
+        const isPrefix = JSON.stringify(after.slice(0, before.length)) === JSON.stringify(before)
+        if (isPrefix) extended++
+        else rebased++
+      }
+      // Without hysteresis every over-limit turn rebases; with a 49-entry step the cut
+      // point moves roughly once every 24 turns.
+      expect(rebased).toBeLessThanOrEqual(Math.ceil(280 / 24) + 2)
+      expect(extended).toBeGreaterThan(260)
+    }
+  )
+
+  test('target at or above the limit keeps trimming only what is needed', () => {
+    const history = grow(150, 'chat')
+    const exact = fitHistoryWithStage(history, 198).history
+    expect(fitHistoryWithStage(history, 198, { targetEntries: 198 }).history).toEqual(exact)
+    expect(fitHistoryWithStage(history, 198, { targetEntries: 500 }).history).toEqual(exact)
+    expect(exact.length).toBeGreaterThanOrEqual(197)
+  })
+
+  test('transformToSdkRequest applies the 150 default and the configured value', () => {
+    const messages: any[] = [{ role: 'user', content: 'start' }]
+    for (let i = 0; i < 110; i++) {
+      messages.push({ role: 'assistant', content: `answer ${i}` })
+      messages.push({ role: 'user', content: `question ${i}` })
+    }
+    const body = { system: 'You are helpful', messages, tools: [] }
+    const lengthFor = (effort: Record<string, unknown>) =>
+      (
+        (
+          transformToSdkRequest(
+            body,
+            'claude-opus-5-5',
+            auth,
+            false,
+            20000,
+            undefined,
+            effort
+          ) as any
+        ).conversationState.history as CodeWhispererMessage[]
+      ).length
+
+    // 220 entries: one 49-entry step (198 - 150 + 1) brings it to ~171; drop mode then
+    // starts the kept tail at an assistant entry.
+    expect(lengthFor({})).toBeGreaterThanOrEqual(169)
+    expect(lengthFor({})).toBeLessThanOrEqual(172)
+    expect(lengthFor({ historyTrimTarget: 198 })).toBeGreaterThanOrEqual(197)
+    expect(lengthFor({ historyTrimTarget: 100 })).toBeGreaterThanOrEqual(119)
+    expect(lengthFor({ historyTrimTarget: 100 })).toBeLessThanOrEqual(122)
+  })
+})

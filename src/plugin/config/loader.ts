@@ -101,6 +101,7 @@ function parseNumberEnv(value: string | undefined, fallback: number): number {
 
 type IntegerConfigKey =
   | 'max_history_entries'
+  | 'history_trim_target'
   | 'compress_tool_result_max_chars'
   | 'compress_tool_input_max_chars'
 
@@ -196,6 +197,13 @@ function applyEnvOverrides(config: KiroConfig): KiroConfig {
       'max_history_entries',
       env.KIRO_MAX_HISTORY_ENTRIES,
       config.max_history_entries
+    ),
+
+    history_trim_target: parseIntegerEnv(
+      'KIRO_HISTORY_TRIM_TARGET',
+      'history_trim_target',
+      env.KIRO_HISTORY_TRIM_TARGET,
+      config.history_trim_target
     ),
 
     compress_tool_result_max_chars: parseIntegerEnv(

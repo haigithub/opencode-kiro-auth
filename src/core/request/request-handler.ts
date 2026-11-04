@@ -263,6 +263,7 @@ export class RequestHandler {
       autoEffortMapping: this.config.auto_effort_mapping,
       compressOverflowHistory: this.config.compress_overflow_history,
       maxHistoryEntries: this.config.max_history_entries,
+      historyTrimTarget: this.config.history_trim_target,
       compressToolResultMaxChars: this.config.compress_tool_result_max_chars,
       compressToolInputMaxChars: this.config.compress_tool_input_max_chars,
       compressSaveTruncatedOutput: this.config.compress_save_truncated_output
