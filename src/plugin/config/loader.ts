@@ -99,16 +99,16 @@ function parseNumberEnv(value: string | undefined, fallback: number): number {
   return parsed
 }
 
-type IntegerConfigKey =
+type BoundedNumberConfigKey =
   | 'max_history_entries'
   | 'history_trim_target'
   | 'compress_tool_result_max_chars'
   | 'compress_tool_input_max_chars'
 
-/** Parse an integer env override with the same bounds as kiro.json; invalid values are ignored. */
-function parseIntegerEnv(
+/** Parse a numeric env override with the same bounds as kiro.json; invalid values are ignored. */
+function parseBoundedNumberEnv(
   name: string,
-  key: IntegerConfigKey,
+  key: BoundedNumberConfigKey,
   value: string | undefined,
   fallback: number
 ): number {
@@ -192,28 +192,28 @@ function applyEnvOverrides(config: KiroConfig): KiroConfig {
       config.compress_overflow_history
     ),
 
-    max_history_entries: parseIntegerEnv(
+    max_history_entries: parseBoundedNumberEnv(
       'KIRO_MAX_HISTORY_ENTRIES',
       'max_history_entries',
       env.KIRO_MAX_HISTORY_ENTRIES,
       config.max_history_entries
     ),
 
-    history_trim_target: parseIntegerEnv(
+    history_trim_target: parseBoundedNumberEnv(
       'KIRO_HISTORY_TRIM_TARGET',
       'history_trim_target',
       env.KIRO_HISTORY_TRIM_TARGET,
       config.history_trim_target
     ),
 
-    compress_tool_result_max_chars: parseIntegerEnv(
+    compress_tool_result_max_chars: parseBoundedNumberEnv(
       'KIRO_COMPRESS_TOOL_RESULT_MAX_CHARS',
       'compress_tool_result_max_chars',
       env.KIRO_COMPRESS_TOOL_RESULT_MAX_CHARS,
       config.compress_tool_result_max_chars
     ),
 
-    compress_tool_input_max_chars: parseIntegerEnv(
+    compress_tool_input_max_chars: parseBoundedNumberEnv(
       'KIRO_COMPRESS_TOOL_INPUT_MAX_CHARS',
       'compress_tool_input_max_chars',
       env.KIRO_COMPRESS_TOOL_INPUT_MAX_CHARS,

@@ -986,18 +986,40 @@ describe('history_trim_target hysteresis', () => {
     return history
   }
 
-  test('defaults to 150 and mirrors KIRO_CONSTANTS', () => {
-    expect(DEFAULT_CONFIG.history_trim_target).toBe(150)
-    expect(KiroConfigSchema.parse({}).history_trim_target).toBe(150)
-    expect(KIRO_CONSTANTS.HISTORY_TRIM_TARGET).toBe(150)
-    expect(KiroConfigSchema.safeParse({ history_trim_target: 9 }).success).toBe(false)
-    expect(KiroConfigSchema.safeParse({ history_trim_target: 150.5 }).success).toBe(false)
+  test('is a ratio that defaults to 0.75 and mirrors KIRO_CONSTANTS', () => {
+    expect(DEFAULT_CONFIG.history_trim_target).toBe(0.75)
+    expect(KiroConfigSchema.parse({}).history_trim_target).toBe(0.75)
+    expect(KIRO_CONSTANTS.HISTORY_TRIM_TARGET).toBe(0.75)
+    for (const bad of [0, 0.05, 1.01, 150]) {
+      expect(KiroConfigSchema.safeParse({ history_trim_target: bad }).success).toBe(false)
+    }
+    for (const ok of [0.1, 0.5, 0.8, 1]) {
+      expect(KiroConfigSchema.parse({ history_trim_target: ok }).history_trim_target).toBe(ok)
+    }
     withEnvConfig('KIRO_HISTORY_TRIM_TARGET', (loaded) => {
-      expect(loaded('120').history_trim_target).toBe(120)
-      for (const bad of ['', '0', '9', '1.5', 'abc']) {
-        expect(loaded(bad).history_trim_target).toBe(150)
+      expect(loaded('0.6').history_trim_target).toBe(0.6)
+      expect(loaded(' 1 ').history_trim_target).toBe(1)
+      for (const bad of ['', '0', '0.05', '1.5', '150', 'abc']) {
+        expect(loaded(bad).history_trim_target).toBe(0.75)
       }
     })
+  })
+
+  test('scales the low-water mark with max_history_entries', () => {
+    for (const [limit, expected] of [
+      [198, 148],
+      [100, 75],
+      [60, 45]
+    ] as const) {
+      // limit + 1 entries: one step past the limit lands exactly on the low-water mark.
+      const history = grow(limit / 2, 'chat')
+      expect(history).toHaveLength(limit + 1)
+      const fit = fitHistoryWithStage(history, limit, { trimRatio: 0.75 })
+      expect(fit.stage).toBe('drop')
+      expect(fit.history.length).toBeGreaterThanOrEqual(expected - 1)
+      expect(fit.history.length).toBeLessThanOrEqual(expected)
+      assertWellFormed(fit.history)
+    }
   })
 
   test.each([
@@ -1009,11 +1031,11 @@ describe('history_trim_target hysteresis', () => {
     for (let turns = 100; turns <= 400; turns++) {
       const fit = fitHistoryWithStage(grow(turns, kind), 198, {
         compressOverflow: compress,
-        targetEntries: 150
+        trimRatio: 0.75
       })
       expect(fit.history.length).toBeLessThanOrEqual(198)
       if (fit.stage !== 'none' && fit.stage !== 'fold') {
-        expect(fit.history.length).toBeGreaterThanOrEqual(148)
+        expect(fit.history.length).toBeGreaterThanOrEqual(146)
       }
       assertWellFormed(fit.history)
     }
@@ -1029,7 +1051,7 @@ describe('history_trim_target hysteresis', () => {
       const fitAt = (turns: number) =>
         fitHistoryWithStage(grow(turns, kind), 198, {
           compressOverflow: compress,
-          targetEntries: 150
+          trimRatio: 0.75
         }).history
       let extended = 0
       let rebased = 0
@@ -1042,22 +1064,23 @@ describe('history_trim_target hysteresis', () => {
         if (isPrefix) extended++
         else rebased++
       }
-      // Without hysteresis every over-limit turn rebases; with a 49-entry step the cut
-      // point moves roughly once every 24 turns.
+      // Without hysteresis every over-limit turn rebases; with a 51-entry step (198 - 148 + 1)
+      // the cut point moves roughly once every 25 turns.
       expect(rebased).toBeLessThanOrEqual(Math.ceil(280 / 24) + 2)
       expect(extended).toBeGreaterThan(260)
     }
   )
 
-  test('target at or above the limit keeps trimming only what is needed', () => {
+  test('ratio 1 (or invalid) keeps trimming only what is needed', () => {
     const history = grow(150, 'chat')
     const exact = fitHistoryWithStage(history, 198).history
-    expect(fitHistoryWithStage(history, 198, { targetEntries: 198 }).history).toEqual(exact)
-    expect(fitHistoryWithStage(history, 198, { targetEntries: 500 }).history).toEqual(exact)
+    for (const trimRatio of [1, 2, Number.NaN]) {
+      expect(fitHistoryWithStage(history, 198, { trimRatio }).history).toEqual(exact)
+    }
     expect(exact.length).toBeGreaterThanOrEqual(197)
   })
 
-  test('transformToSdkRequest applies the 150 default and the configured value', () => {
+  test('transformToSdkRequest applies the 0.75 default and the configured ratio', () => {
     const messages: any[] = [{ role: 'user', content: 'start' }]
     for (let i = 0; i < 110; i++) {
       messages.push({ role: 'assistant', content: `answer ${i}` })
@@ -1079,12 +1102,17 @@ describe('history_trim_target hysteresis', () => {
         ).conversationState.history as CodeWhispererMessage[]
       ).length
 
-    // 220 entries: one 49-entry step (198 - 150 + 1) brings it to ~171; drop mode then
+    // 220 entries: one 51-entry step (198 - 148 + 1) brings it to ~169; drop mode then
     // starts the kept tail at an assistant entry.
-    expect(lengthFor({})).toBeGreaterThanOrEqual(169)
-    expect(lengthFor({})).toBeLessThanOrEqual(172)
-    expect(lengthFor({ historyTrimTarget: 198 })).toBeGreaterThanOrEqual(197)
-    expect(lengthFor({ historyTrimTarget: 100 })).toBeGreaterThanOrEqual(119)
-    expect(lengthFor({ historyTrimTarget: 100 })).toBeLessThanOrEqual(122)
+    expect(lengthFor({})).toBeGreaterThanOrEqual(167)
+    expect(lengthFor({})).toBeLessThanOrEqual(170)
+    expect(lengthFor({ historyTrimTarget: 1 })).toBeGreaterThanOrEqual(197)
+    // 0.5 -> target 99, step 100 -> ~120.
+    expect(lengthFor({ historyTrimTarget: 0.5 })).toBeGreaterThanOrEqual(119)
+    expect(lengthFor({ historyTrimTarget: 0.5 })).toBeLessThanOrEqual(122)
+    // The ratio follows max_history_entries: limit 100 -> target 75, step 26 -> ~90.
+    const scaled = lengthFor({ maxHistoryEntries: 100 })
+    expect(scaled).toBeGreaterThanOrEqual(75)
+    expect(scaled).toBeLessThanOrEqual(100)
   })
 })

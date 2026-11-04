@@ -107,11 +107,12 @@ export const KiroConfigSchema = z.object({
   // Kiro raises its limit. Mirrors KIRO_CONSTANTS.MAX_HISTORY_ENTRIES.
   max_history_entries: z.number().int().min(10).max(10000).default(198),
 
-  // Low-water mark for max_history_entries. Once history exceeds the limit it is trimmed
-  // down to this size in one step, so the cut point (and Kiro's cacheable prompt prefix)
-  // stays fixed for many turns instead of moving every turn. Values at or above
-  // max_history_entries trim only what is needed. Mirrors KIRO_CONSTANTS.HISTORY_TRIM_TARGET.
-  history_trim_target: z.number().int().min(10).max(10000).default(150),
+  // Low-water mark as a fraction of max_history_entries. Once history exceeds the limit it
+  // is trimmed down to floor(max_history_entries * history_trim_target) entries in one
+  // step, so the cut point (and Kiro's cacheable prompt prefix) stays fixed for many turns
+  // instead of moving every turn. 1 trims only what is needed. Mirrors
+  // KIRO_CONSTANTS.HISTORY_TRIM_TARGET.
+  history_trim_target: z.number().min(0.1).max(1).default(0.75),
 
   // compress_overflow_history only: per-item character caps for old tool results and
   // tool call inputs written into the transcript. Longer text keeps its head and tail
@@ -150,7 +151,7 @@ export const DEFAULT_CONFIG: KiroConfig = {
   auto_effort_mapping: true,
   compress_overflow_history: false,
   max_history_entries: 198,
-  history_trim_target: 150,
+  history_trim_target: 0.75,
   compress_tool_result_max_chars: 8000,
   compress_tool_input_max_chars: 4000,
   compress_save_truncated_output: true,

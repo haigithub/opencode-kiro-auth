@@ -266,7 +266,7 @@ function buildCodeWhispererRequest(
     historyLimits.maxHistoryEntries ?? KIRO_CONSTANTS.MAX_HISTORY_ENTRIES,
     {
       compressOverflow: historyLimits.compressOverflowHistory ?? false,
-      targetEntries: historyLimits.historyTrimTarget ?? KIRO_CONSTANTS.HISTORY_TRIM_TARGET,
+      trimRatio: historyLimits.historyTrimTarget ?? KIRO_CONSTANTS.HISTORY_TRIM_TARGET,
       toolResultMaxChars:
         historyLimits.compressToolResultMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_RESULT_MAX_CHARS,
       toolInputMaxChars:

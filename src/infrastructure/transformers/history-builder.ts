@@ -481,11 +481,11 @@ export interface HistoryFitOptions {
   /** Compress mode: stores the full text of truncated items so the marker can link to it. */
   saveTruncatedText?: TruncatedTextSaver
   /**
-   * Low-water mark. Once history exceeds the limit it is cut down to between this size
-   * and the limit, in fixed steps, so the cut point stays put for many turns. Defaults to
-   * the limit itself (trim only what is needed).
+   * Low-water mark as a fraction of the limit (0-1]. Once history exceeds the limit it is
+   * cut down to between floor(limit * ratio) and the limit, in fixed steps, so the cut point
+   * stays put for many turns. Defaults to 1 (trim only what is needed).
    */
-  targetEntries?: number
+  trimRatio?: number
 }
 
 // Smallest limit that still leaves the system-prompt turn plus one assistant entry.
@@ -496,9 +496,9 @@ function normalizeMaxEntries(maxEntries: number): number {
   return Math.max(MIN_HISTORY_ENTRIES, Math.floor(maxEntries))
 }
 
-function normalizeTargetEntries(targetEntries: number | undefined, maxEntries: number): number {
-  if (targetEntries === undefined || !Number.isFinite(targetEntries)) return maxEntries
-  return Math.min(maxEntries, Math.max(MIN_HISTORY_ENTRIES, Math.floor(targetEntries)))
+function targetEntriesFor(trimRatio: number | undefined, maxEntries: number): number {
+  if (trimRatio === undefined || !Number.isFinite(trimRatio) || trimRatio >= 1) return maxEntries
+  return Math.max(MIN_HISTORY_ENTRIES, Math.floor(maxEntries * Math.max(0, trimRatio)))
 }
 
 /**
@@ -520,7 +520,7 @@ export function fitHistoryWithStage(
 ): { history: CodeWhispererMessage[]; stage: HistoryFitStage } {
   const maxEntries = normalizeMaxEntries(requestedMaxEntries)
   if (history.length <= maxEntries) return { history, stage: 'none' }
-  const targetEntries = normalizeTargetEntries(options.targetEntries, maxEntries)
+  const targetEntries = targetEntriesFor(options.trimRatio, maxEntries)
   const folded = foldToolCallPairs(
     history,
     trimmedLength(history.length, maxEntries, targetEntries)
