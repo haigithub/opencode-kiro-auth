@@ -99,6 +99,31 @@ function parseNumberEnv(value: string | undefined, fallback: number): number {
   return parsed
 }
 
+type BoundedNumberConfigKey =
+  | 'max_history_entries'
+  | 'history_trim_target'
+  | 'compress_tool_result_max_chars'
+  | 'compress_tool_input_max_chars'
+
+/** Parse a numeric env override with the same bounds as kiro.json; invalid values are ignored. */
+function parseBoundedNumberEnv(
+  name: string,
+  key: BoundedNumberConfigKey,
+  value: string | undefined,
+  fallback: number
+): number {
+  if (value === undefined) {
+    return fallback
+  }
+  const candidate = value.trim() === '' ? NaN : Number(value)
+  const result = KiroConfigSchema.shape[key].safeParse(candidate)
+  if (!result.success) {
+    logger.warn(`Ignoring ${name}=${JSON.stringify(value)}: ${result.error.issues[0]?.message}`)
+    return fallback
+  }
+  return result.data
+}
+
 function applyEnvOverrides(config: KiroConfig): KiroConfig {
   const env = process.env
 
@@ -160,6 +185,44 @@ function applyEnvOverrides(config: KiroConfig): KiroConfig {
     enable_log_api_request: parseBooleanEnv(
       env.KIRO_ENABLE_LOG_API_REQUEST,
       config.enable_log_api_request
+    ),
+
+    compress_overflow_history: parseBooleanEnv(
+      env.KIRO_COMPRESS_OVERFLOW_HISTORY,
+      config.compress_overflow_history
+    ),
+
+    max_history_entries: parseBoundedNumberEnv(
+      'KIRO_MAX_HISTORY_ENTRIES',
+      'max_history_entries',
+      env.KIRO_MAX_HISTORY_ENTRIES,
+      config.max_history_entries
+    ),
+
+    history_trim_target: parseBoundedNumberEnv(
+      'KIRO_HISTORY_TRIM_TARGET',
+      'history_trim_target',
+      env.KIRO_HISTORY_TRIM_TARGET,
+      config.history_trim_target
+    ),
+
+    compress_tool_result_max_chars: parseBoundedNumberEnv(
+      'KIRO_COMPRESS_TOOL_RESULT_MAX_CHARS',
+      'compress_tool_result_max_chars',
+      env.KIRO_COMPRESS_TOOL_RESULT_MAX_CHARS,
+      config.compress_tool_result_max_chars
+    ),
+
+    compress_tool_input_max_chars: parseBoundedNumberEnv(
+      'KIRO_COMPRESS_TOOL_INPUT_MAX_CHARS',
+      'compress_tool_input_max_chars',
+      env.KIRO_COMPRESS_TOOL_INPUT_MAX_CHARS,
+      config.compress_tool_input_max_chars
+    ),
+
+    compress_save_truncated_output: parseBooleanEnv(
+      env.KIRO_COMPRESS_SAVE_TRUNCATED_OUTPUT,
+      config.compress_save_truncated_output
     )
   }
 }

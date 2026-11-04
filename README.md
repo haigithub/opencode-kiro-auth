@@ -88,7 +88,8 @@ reachable from a budget alone:
 | `<= 98304` | `xhigh` |
 | `> 98304` | `max` |
 
-`xhigh` is only available on opus-4.7, opus-4.8, opus-5 and sonnet-5. Those models
+`xhigh` is only available on opus-4.7, opus-4.8, opus-5, opus-5.5, sonnet-5 and
+sonnet-5.5. Those models
 get a five-variant ladder; the rest get four, and a budget in the `xhigh` band is
 clamped to `max`.
 
@@ -218,6 +219,12 @@ Edit `~/.config/opencode/kiro.json`:
   "usage_sync_max_retries": 3,
   "usage_tracking_enabled": true,
   "auto_effort_mapping": true,
+  "compress_overflow_history": false,
+  "max_history_entries": 198,
+  "history_trim_target": 0.75,
+  "compress_tool_result_max_chars": 8000,
+  "compress_tool_input_max_chars": 4000,
+  "compress_save_truncated_output": true,
   "enable_log_api_request": false
 }
 ```
@@ -244,6 +251,42 @@ Edit `~/.config/opencode/kiro.json`:
 - `usage_tracking_enabled`: Enable usage tracking and toast notifications.
 - `auto_effort_mapping`: Automatically map OpenCode thinking budgets to Kiro effort
   levels for supported models (default: `true`).
+- `compress_overflow_history`: Kiro rejects conversations with 200 or more history
+  entries. The plugin first folds older tool loops; if that is not enough, it drops the
+  oldest turns (default, `false`), carrying over the reply to the first user turn (where
+  OpenCode keeps its compaction summary). Set to `true` to condense those turns into a
+  text transcript inside the first user turn instead, so their content stays visible to
+  the model. Env override: `KIRO_COMPRESS_OVERFLOW_HISTORY`.
+- `max_history_entries`: Maximum history entries sent to Kiro before folding, dropping or
+  compressing kicks in (10-10000, default `198`). Kiro currently rejects 200 or more;
+  lower it for extra headroom, raise it only if Kiro raises its limit. Env override:
+  `KIRO_MAX_HISTORY_ENTRIES` (values outside 10-10000 or non-integers are ignored with a
+  warning).
+- `history_trim_target`: Low-water mark as a fraction of `max_history_entries` (0.1-1,
+  default `0.75`, i.e. 148 of 198). Once history exceeds the limit, folding, dropping or
+  compressing cuts it down to that size in one step. The cut point then stays fixed while
+  the conversation grows back to the limit, so the prompt prefix Kiro sees is unchanged
+  for many turns instead of shifting every turn. `1` trims only what is needed each turn.
+  A lower value keeps the prefix stable for longer but, in drop mode, drops more turns at
+  once. Env override: `KIRO_HISTORY_TRIM_TARGET`.
+- `compress_tool_result_max_chars` / `compress_tool_input_max_chars`: Only used with
+  `compress_overflow_history`. Caps each old tool result (default `8000`) and tool call
+  input (default `4000`) written into the transcript, keeping the head and tail (cut at
+  line breaks where possible) around a `[... N chars truncated ...]` marker. Recent turns
+  kept as real entries are never truncated. `0` disables the cap (0-1000000). Env
+  overrides: `KIRO_COMPRESS_TOOL_RESULT_MAX_CHARS`, `KIRO_COMPRESS_TOOL_INPUT_MAX_CHARS`.
+- `compress_save_truncated_output`: Saves content that would otherwise leave the history
+  to OpenCode's tool-output directory (`~/.local/share/opencode/tool-output/tool_kiro_<hash>`,
+  mode `0600`) and names the file, so the model can Read or Grep it back:
+  - with `compress_overflow_history`, the full text of each truncated transcript item;
+  - in both compress and drop modes, the images of condensed or dropped turns (saved
+    as `tool_kiro_<hash>.<png|jpeg|gif|webp>` and listed in the transcript or in the drop
+    note).
+
+  File names are content hashes, so the transcript is identical across requests; OpenCode
+  removes the files once they are 7 days old. If a file cannot be written, the transcript
+  falls back to plain head+tail truncation or `[image N ... omitted]` (default: `true`).
+  Env override: `KIRO_COMPRESS_SAVE_TRUNCATED_OUTPUT`.
 - `enable_log_api_request`: Enable detailed API request logging. Request logs
   include the resolved `additionalModelRequestFields`, so this is how you confirm
   which effort level actually went out on the wire.

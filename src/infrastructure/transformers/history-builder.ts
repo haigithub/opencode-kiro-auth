@@ -219,6 +219,381 @@ export function injectSystemPrompt(
   return history
 }
 
+const TOOL_RESULTS_PLACEHOLDER = 'Tool results provided.'
+const TOOL_CONTINUES_PLACEHOLDER = '[system: tool calling continues]'
+const OMITTED_HISTORY_NOTE =
+  '[system: earlier conversation turns were omitted to fit the Kiro history limit]'
+
+function isToolCallPair(history: CodeWhispererMessage[], i: number): boolean {
+  const asst = history[i]?.assistantResponseMessage
+  const user = history[i + 1]?.userInputMessage
+  return !!(
+    asst?.toolUses?.length &&
+    user?.userInputMessageContext?.toolResults?.length &&
+    !user.images?.length
+  )
+}
+
+function isPlaceholderToolResultTurn(entry: CodeWhispererMessage | undefined): boolean {
+  const content = entry?.userInputMessage?.content?.trim() ?? ''
+  return content === '' || content === TOOL_RESULTS_PLACEHOLDER
+}
+
+function mergeToolCallPairs(
+  first: [CodeWhispererMessage, CodeWhispererMessage],
+  second: [CodeWhispererMessage, CodeWhispererMessage]
+): [CodeWhispererMessage, CodeWhispererMessage] {
+  const [asstA, userA] = first
+  const [asstB, userB] = second
+  const textB = asstB.assistantResponseMessage!.content?.trim() ?? ''
+  const contentA = asstA.assistantResponseMessage!.content ?? ''
+  const content =
+    textB && textB !== TOOL_CONTINUES_PLACEHOLDER
+      ? contentA
+        ? `${contentA}\n\n${textB}`
+        : textB
+      : contentA
+  return [
+    {
+      assistantResponseMessage: {
+        content,
+        toolUses: [
+          ...asstA.assistantResponseMessage!.toolUses!,
+          ...asstB.assistantResponseMessage!.toolUses!
+        ]
+      }
+    },
+    {
+      userInputMessage: {
+        ...userB.userInputMessage!,
+        userInputMessageContext: {
+          ...userB.userInputMessage!.userInputMessageContext,
+          toolResults: [
+            ...userA.userInputMessage!.userInputMessageContext!.toolResults!,
+            ...userB.userInputMessage!.userInputMessageContext!.toolResults!
+          ]
+        }
+      }
+    }
+  ]
+}
+
+/**
+ * Fold consecutive tool-call/tool-result pairs (oldest first) into single pairs carrying
+ * several toolUses/toolResults. Lossless for content: only the per-step interleaving of
+ * older tool loops is flattened. Recent pairs are left untouched once the limit is met.
+ */
+function foldToolCallPairs(history: CodeWhispererMessage[], maxEntries: number) {
+  const result: CodeWhispererMessage[] = []
+  let excess = history.length - maxEntries
+  let i = 0
+  while (i < history.length) {
+    if (excess > 0 && i > 0 && isToolCallPair(history, i)) {
+      let pair: [CodeWhispererMessage, CodeWhispererMessage] = [history[i]!, history[i + 1]!]
+      i += 2
+      while (excess > 0 && isPlaceholderToolResultTurn(pair[1]) && isToolCallPair(history, i)) {
+        pair = mergeToolCallPairs(pair, [history[i]!, history[i + 1]!])
+        i += 2
+        excess -= 2
+      }
+      result.push(...pair)
+    } else {
+      result.push(history[i]!)
+      i++
+    }
+  }
+  return result
+}
+
+/**
+ * Text of the reply to the first user turn when that reply is about to be dropped and
+ * carries no tool calls. After OpenCode compacts a session this entry holds the summary,
+ * so drop mode carries it over instead of losing it.
+ */
+function droppedLeadReply(history: CodeWhispererMessage[], start: number): string {
+  if (start <= 1) return ''
+  const reply = history[1]?.assistantResponseMessage
+  if (!reply || reply.toolUses?.length) return ''
+  return transcriptText(reply.content)
+}
+
+/**
+ * Drop the oldest turns while keeping the first user message (it carries the injected
+ * system prompt). The kept tail starts at an assistant entry so every retained toolResult
+ * still follows the assistant toolUses it answers.
+ */
+function dropOldestTurns(
+  history: CodeWhispererMessage[],
+  maxEntries: number,
+  saveImage?: HistoryImageSaver
+) {
+  const head = history[0]?.userInputMessage ? [history[0]] : []
+  let start = history.length - (maxEntries - head.length)
+  while (start < history.length && !history[start]?.assistantResponseMessage) start++
+  // Unreachable for alternating histories. Sending the input unchanged makes Kiro reject it
+  // visibly instead of silently losing the system prompt or orphaning a toolResult.
+  if (start >= history.length) return history
+
+  const first = history[start]!.assistantResponseMessage!
+  const lead = head.length ? droppedLeadReply(history, start) : ''
+  const images = droppedImageNote(history.slice(head.length, start), saveImage)
+  const content = [lead, OMITTED_HISTORY_NOTE, images, first.content].filter(Boolean).join('\n\n')
+  return [...head, { assistantResponseMessage: { ...first, content } }, ...history.slice(start + 1)]
+}
+
+const TRANSCRIPT_OPEN =
+  '<earlier_conversation note="Older turns condensed into text to fit the Kiro history limit. ' +
+  'Tool calls listed here already ran; do not repeat them or imitate this format.">'
+const TRANSCRIPT_CLOSE = '</earlier_conversation>'
+const PLACEHOLDER_CONTENTS = new Set([
+  TOOL_RESULTS_PLACEHOLDER,
+  TOOL_CONTINUES_PLACEHOLDER,
+  '[system: conversation continues]'
+])
+
+function transcriptText(content: string | undefined): string {
+  const text = (content ?? '').replace(/<thinking>[\s\S]*?<\/thinking>/g, '').trim()
+  return PLACEHOLDER_CONTENTS.has(text) ? '' : text
+}
+
+function stringifyToolInput(input: unknown): string {
+  if (typeof input === 'string') return input
+  try {
+    return JSON.stringify(input ?? {})
+  } catch {
+    return String(input)
+  }
+}
+
+function escapeTranscriptTags(text: string): string {
+  return text.replace(/<(\/?earlier_conversation)/gi, '&lt;$1')
+}
+
+/** Persists the full text of a truncated item; returns its path, or undefined on failure. */
+export type TruncatedTextSaver = (text: string) => string | undefined
+
+/** Persists an image from a condensed or dropped turn; returns its path, or undefined. */
+export type HistoryImageSaver = (bytes: Uint8Array, format: string) => string | undefined
+
+type HistoryImage = NonNullable<
+  NonNullable<CodeWhispererMessage['userInputMessage']>['images']
+>[number]
+
+function formatBytes(bytes: number): string {
+  return bytes >= 1024 * 1024
+    ? `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    : `${Math.max(1, Math.round(bytes / 1024))} KB`
+}
+
+/**
+ * One line per image. With a saver the line carries the saved path, so the model can Read
+ * the image again; otherwise (or when saving fails) it only notes that an image was there.
+ */
+function describeImages(images: HistoryImage[], save?: HistoryImageSaver): string[] {
+  return images.map((image, i) => {
+    const kind = `image/${image.format}, ${formatBytes(image.source.bytes.byteLength)}`
+    const path = save?.(image.source.bytes, image.format)
+    return path
+      ? `[image ${i + 1} (${kind}) saved to ${path}; use Read to view it]`
+      : `[image ${i + 1} (${kind}) omitted]`
+  })
+}
+
+function droppedImageNote(entries: CodeWhispererMessage[], save?: HistoryImageSaver): string {
+  if (!save) return ''
+  const images = entries.flatMap((e) => e.userInputMessage?.images ?? [])
+  if (!images.length) return ''
+  return ['Images the user shared in the omitted turns:', ...describeImages(images, save)].join(
+    '\n'
+  )
+}
+
+/**
+ * Keep the head and tail of text longer than maxChars around a truncation marker, cutting
+ * at line breaks when one falls in the outer half of each budget (whole lines read better
+ * than a split line), otherwise at a character boundary that never splits a surrogate
+ * pair. When `save` stores the full text, the marker points at the file so the model can
+ * read the omitted middle. maxChars <= 0 (or non-finite) disables the cap.
+ */
+export function truncateMiddle(text: string, maxChars: number, save?: TruncatedTextSaver): string {
+  if (!(maxChars > 0) || !Number.isFinite(maxChars) || text.length <= maxChars) return text
+  const headBudget = Math.ceil(maxChars / 2)
+  const tailBudget = Math.floor(maxChars / 2)
+  const headEnd = headCut(text, headBudget)
+  const tailStart = tailCut(text, text.length - tailBudget, tailBudget)
+  const omitted = tailStart - headEnd
+  const path = save?.(text)
+  const marker = path
+    ? `[... ${omitted} chars truncated; full content saved to ${path} (use Read with offset/limit or Grep) ...]`
+    : `[... ${omitted} chars truncated ...]`
+  return `${text.slice(0, headEnd)}\n${marker}\n${text.slice(tailStart)}`
+}
+
+function headCut(text: string, budget: number): number {
+  const newline = text.lastIndexOf('\n', budget - 1)
+  if (newline >= Math.floor(budget / 2)) return newline
+  return isHighSurrogate(text.charCodeAt(budget - 1)) ? budget - 1 : budget
+}
+
+function tailCut(text: string, start: number, budget: number): number {
+  const newline = text.indexOf('\n', start)
+  if (newline !== -1 && newline < start + Math.ceil(budget / 2)) return newline + 1
+  return isLowSurrogate(text.charCodeAt(start)) ? start + 1 : start
+}
+
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff
+}
+
+function isLowSurrogate(code: number): boolean {
+  return code >= 0xdc00 && code <= 0xdfff
+}
+
+interface TranscriptLimits {
+  toolResultMaxChars: number
+  toolInputMaxChars: number
+  save?: TruncatedTextSaver
+  saveImage?: HistoryImageSaver
+}
+
+function renderTranscript(entries: CodeWhispererMessage[], limits: TranscriptLimits): string {
+  const lines: string[] = []
+  for (const entry of entries) {
+    const asst = entry.assistantResponseMessage
+    if (asst) {
+      const text = transcriptText(asst.content)
+      if (text) lines.push(`Assistant: ${text}`)
+      for (const use of asst.toolUses ?? []) {
+        lines.push(
+          `Assistant tool call ${use.name} (id ${use.toolUseId}) input: ${truncateMiddle(stringifyToolInput(use.input), limits.toolInputMaxChars, limits.save)}`
+        )
+      }
+      continue
+    }
+    const user = entry.userInputMessage
+    if (!user) continue
+    for (const result of user.userInputMessageContext?.toolResults ?? []) {
+      const output = truncateMiddle(
+        result.content.map((c) => c.text ?? '').join('\n'),
+        limits.toolResultMaxChars,
+        limits.save
+      )
+      const status = result.status && result.status !== 'success' ? ` [${result.status}]` : ''
+      lines.push(`Tool result (id ${result.toolUseId})${status}: ${output}`)
+    }
+    const text = transcriptText(user.content)
+    if (text) lines.push(`User: ${text}`)
+    for (const line of describeImages(user.images ?? [], limits.saveImage)) {
+      lines.push(`User: ${line}`)
+    }
+  }
+  return lines.join('\n\n')
+}
+
+/**
+ * Like dropOldestTurns, but the removed turns are rendered as a text transcript
+ * appended to the first user turn, so their content stays visible to the model.
+ * Tool calls become plain text: Kiro requires every toolResult to follow its
+ * toolUses, which cannot hold once the turns no longer exist as entries.
+ */
+function compressOldestTurns(
+  history: CodeWhispererMessage[],
+  maxEntries: number,
+  limits: TranscriptLimits
+) {
+  const head = history[0]?.userInputMessage
+  if (!head) return dropOldestTurns(history, maxEntries, limits.saveImage)
+  let start = history.length - (maxEntries - 1)
+  while (start < history.length && !history[start]?.assistantResponseMessage) start++
+  if (start >= history.length) return dropOldestTurns(history, maxEntries, limits.saveImage)
+
+  const transcript = escapeTranscriptTags(renderTranscript(history.slice(1, start), limits))
+  const content = transcript
+    ? `${head.content}\n\n${TRANSCRIPT_OPEN}\n${transcript}\n${TRANSCRIPT_CLOSE}`
+    : head.content
+  return [{ userInputMessage: { ...head, content } }, ...history.slice(start)]
+}
+
+export type HistoryFitStage = 'none' | 'fold' | 'drop' | 'compress'
+
+export interface HistoryFitOptions {
+  compressOverflow?: boolean
+  /** Compress mode: max chars per old tool result in the transcript (0 = no cap). */
+  toolResultMaxChars?: number
+  /** Compress mode: max chars per old tool call input in the transcript (0 = no cap). */
+  toolInputMaxChars?: number
+  /** Compress mode: stores the full text of truncated items so the marker can link to it. */
+  saveTruncatedText?: TruncatedTextSaver
+  /** Compress and drop modes: stores images from removed turns so the model can Read them. */
+  saveImage?: HistoryImageSaver
+  /**
+   * Low-water mark as a fraction of the limit (0-1]. Once history exceeds the limit it is
+   * cut down to between floor(limit * ratio) and the limit, in fixed steps, so the cut point
+   * stays put for many turns. Defaults to 1 (trim only what is needed).
+   */
+  trimRatio?: number
+}
+
+// Smallest limit that still leaves the system-prompt turn plus one assistant entry.
+const MIN_HISTORY_ENTRIES = 3
+
+function normalizeMaxEntries(maxEntries: number): number {
+  if (!Number.isFinite(maxEntries)) return KIRO_CONSTANTS.MAX_HISTORY_ENTRIES
+  return Math.max(MIN_HISTORY_ENTRIES, Math.floor(maxEntries))
+}
+
+function targetEntriesFor(trimRatio: number | undefined, maxEntries: number): number {
+  if (trimRatio === undefined || !Number.isFinite(trimRatio) || trimRatio >= 1) return maxEntries
+  return Math.max(MIN_HISTORY_ENTRIES, Math.floor(maxEntries * Math.max(0, trimRatio)))
+}
+
+/**
+ * Length to cut an over-limit history down to. The amount removed is a whole number of
+ * steps of (max - target + 1) entries, so the result lands in [target, max] and stays the
+ * same cut point while the history grows by up to one step. The result depends only on the
+ * length, because the plugin keeps no state between requests.
+ */
+function trimmedLength(length: number, maxEntries: number, targetEntries: number): number {
+  if (length <= maxEntries) return length
+  const step = maxEntries - targetEntries + 1
+  return length - Math.ceil((length - maxEntries) / step) * step
+}
+
+export function fitHistoryWithStage(
+  history: CodeWhispererMessage[],
+  requestedMaxEntries: number = KIRO_CONSTANTS.MAX_HISTORY_ENTRIES,
+  options: HistoryFitOptions = {}
+): { history: CodeWhispererMessage[]; stage: HistoryFitStage } {
+  const maxEntries = normalizeMaxEntries(requestedMaxEntries)
+  if (history.length <= maxEntries) return { history, stage: 'none' }
+  const targetEntries = targetEntriesFor(options.trimRatio, maxEntries)
+  const folded = foldToolCallPairs(
+    history,
+    trimmedLength(history.length, maxEntries, targetEntries)
+  )
+  if (folded.length <= maxEntries) return { history: folded, stage: 'fold' }
+  const keep = trimmedLength(folded.length, maxEntries, targetEntries)
+  if (options.compressOverflow) {
+    const limits = {
+      toolResultMaxChars:
+        options.toolResultMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_RESULT_MAX_CHARS,
+      toolInputMaxChars: options.toolInputMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_INPUT_MAX_CHARS,
+      save: options.saveTruncatedText,
+      saveImage: options.saveImage
+    }
+    return { history: compressOldestTurns(folded, keep, limits), stage: 'compress' }
+  }
+  return { history: dropOldestTurns(folded, keep, options.saveImage), stage: 'drop' }
+}
+
+export function fitHistoryToEntryLimit(
+  history: CodeWhispererMessage[],
+  maxEntries: number = KIRO_CONSTANTS.MAX_HISTORY_ENTRIES,
+  options: HistoryFitOptions = {}
+): CodeWhispererMessage[] {
+  return fitHistoryWithStage(history, maxEntries, options).history
+}
+
 export function historyHasToolCalling(history: CodeWhispererMessage[]): boolean {
   return history.some(
     (h) =>
