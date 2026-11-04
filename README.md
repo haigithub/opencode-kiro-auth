@@ -322,14 +322,18 @@ Edit `~/.config/opencode/kiro.json`:
   line breaks where possible) around a `[... N chars truncated ...]` marker. Recent turns
   kept as real entries are never truncated. `0` disables the cap (0-1000000). Env
   overrides: `KIRO_COMPRESS_TOOL_RESULT_MAX_CHARS`, `KIRO_COMPRESS_TOOL_INPUT_MAX_CHARS`.
-- `compress_save_truncated_output`: Only used with `compress_overflow_history`. Saves the
-  full text of each truncated item to OpenCode's tool-output directory
-  (`~/.local/share/opencode/tool-output/tool_kiro_<hash>`, mode `0600`) and names the
-  file in the marker, so the model can Read or Grep the omitted middle. File names are
-  content hashes, so the transcript is identical across requests; OpenCode removes the
-  files once they are 7 days old. If a file cannot be written, the marker falls back to
-  plain head+tail truncation (default: `true`). Env override:
-  `KIRO_COMPRESS_SAVE_TRUNCATED_OUTPUT`.
+- `compress_save_truncated_output`: Saves content that would otherwise leave the history
+  to OpenCode's tool-output directory (`~/.local/share/opencode/tool-output/tool_kiro_<hash>`,
+  mode `0600`) and names the file, so the model can Read or Grep it back:
+  - with `compress_overflow_history`, the full text of each truncated transcript item;
+  - in both compress and drop modes, the images of condensed or dropped turns (saved
+    as `tool_kiro_<hash>.<png|jpeg|gif|webp>` and listed in the transcript or in the drop
+    note).
+
+  File names are content hashes, so the transcript is identical across requests; OpenCode
+  removes the files once they are 7 days old. If a file cannot be written, the transcript
+  falls back to plain head+tail truncation or `[image N ... omitted]` (default: `true`).
+  Env override: `KIRO_COMPRESS_SAVE_TRUNCATED_OUTPUT`.
 - `enable_log_api_request`: Enable detailed API request logging. Request logs
   include the resolved `additionalModelRequestFields`, so this is how you confirm
   which effort level actually went out on the wire.

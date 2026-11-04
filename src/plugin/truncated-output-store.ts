@@ -27,9 +27,23 @@ export function getToolOutputDir(): string {
  * maps to the same path on every request and the rendered transcript stays byte-identical.
  */
 export function saveTruncatedText(text: string): string | undefined {
+  return saveContent(text, '')
+}
+
+/**
+ * Save an image from a condensed or dropped turn so the model can Read it back later.
+ * The extension follows the Kiro image format (png, jpeg, gif, webp) so OpenCode's Read
+ * tool returns it as an image attachment.
+ */
+export function saveHistoryImage(bytes: Uint8Array, format: string): string | undefined {
+  const extension = /^[a-z0-9]{1,8}$/i.test(format) ? `.${format.toLowerCase()}` : ''
+  return saveContent(bytes, extension)
+}
+
+function saveContent(content: string | Uint8Array, extension: string): string | undefined {
   const dir = getToolOutputDir()
-  const hash = createHash('sha256').update(text).digest('hex').slice(0, 32)
-  const path = join(dir, `${FILE_PREFIX}${hash}`)
+  const hash = createHash('sha256').update(content).digest('hex').slice(0, 32)
+  const path = join(dir, `${FILE_PREFIX}${hash}${extension}`)
   const now = Date.now()
   const touched = lastTouched.get(path)
   if (touched !== undefined && now - touched < TOUCH_INTERVAL_MS && existsSync(path)) return path
@@ -37,7 +51,7 @@ export function saveTruncatedText(text: string): string | undefined {
   try {
     mkdirSync(dir, { recursive: true })
     try {
-      writeFileSync(path, text, { flag: 'wx', mode: 0o600 })
+      writeFileSync(path, content, { flag: 'wx', mode: 0o600 })
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
       const time = new Date(now)
@@ -46,7 +60,7 @@ export function saveTruncatedText(text: string): string | undefined {
     lastTouched.set(path, now)
     return path
   } catch (error) {
-    const message = `Could not save truncated transcript output to ${dir}: ${String(error)}`
+    const message = `Could not save condensed history content to ${dir}: ${String(error)}`
     if (message !== lastWarning) {
       lastWarning = message
       logger.warn(message)

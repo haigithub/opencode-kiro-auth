@@ -23,6 +23,7 @@ import { transformToSdkRequest } from '../plugin/request.js'
 import {
   getToolOutputDir,
   resetTruncatedOutputCache,
+  saveHistoryImage,
   saveTruncatedText
 } from '../plugin/truncated-output-store.js'
 import type { CodeWhispererMessage } from '../plugin/types'
@@ -1114,5 +1115,128 @@ describe('history_trim_target hysteresis', () => {
     const scaled = lengthFor({ maxHistoryEntries: 100 })
     expect(scaled).toBeGreaterThanOrEqual(75)
     expect(scaled).toBeLessThanOrEqual(100)
+  })
+})
+
+describe('images in condensed or dropped turns', () => {
+  beforeEach(() => {
+    resetTruncatedOutputCache()
+    rmSync(join(dataHome, 'opencode'), { recursive: true, force: true })
+  })
+
+  // 1x1 transparent PNG.
+  const PNG = Uint8Array.from(
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+      'base64'
+    )
+  )
+
+  function chatWithImage(): CodeWhispererMessage[] {
+    const history: CodeWhispererMessage[] = [user('SYSTEM\n\nfirst')]
+    for (let i = 0; i < 150; i++) {
+      history.push(asst(`answer ${i}`))
+      const turn = user(`question ${i}`)
+      if (i === 2) turn.userInputMessage!.images = [{ format: 'png', source: { bytes: PNG } }]
+      history.push(turn)
+    }
+    return history
+  }
+
+  test('saveHistoryImage stores the bytes with the image extension and mode 0600', () => {
+    const path = saveHistoryImage(PNG, 'png')!
+    expect(path.startsWith(join(dataHome, 'opencode', 'tool-output', 'tool_kiro_'))).toBe(true)
+    expect(path.endsWith('.png')).toBe(true)
+    expect(new Uint8Array(readFileSync(path))).toEqual(PNG)
+    if (process.platform !== 'win32') expect(statSync(path).mode & 0o777).toBe(0o600)
+    expect(saveHistoryImage(PNG, 'png')).toBe(path)
+    expect(saveHistoryImage(PNG, '../../x')!.endsWith('.png')).toBe(false)
+    expect(saveHistoryImage(PNG, '../../x')!.includes('..')).toBe(false)
+  })
+
+  test('compress transcript names the saved image path instead of dropping it', () => {
+    const fit = fitHistoryWithStage(chatWithImage(), 198, {
+      compressOverflow: true,
+      saveImage: saveHistoryImage
+    })
+    const head = fit.history[0]!.userInputMessage!.content
+    const match = head.match(
+      /User: \[image 1 \(image\/png, 1 KB\) saved to (\S+); use Read to view it\]/
+    )
+    expect(match).not.toBeNull()
+    expect(new Uint8Array(readFileSync(match![1]!))).toEqual(PNG)
+    expect(head).toContain('User: question 2')
+    expect(head).not.toContain('image(s) omitted')
+  })
+
+  test('without a saver the transcript still notes the image', () => {
+    const head = fitHistoryWithStage(chatWithImage(), 198, { compressOverflow: true }).history[0]!
+      .userInputMessage!.content
+    expect(head).toContain('User: [image 1 (image/png, 1 KB) omitted]')
+    expect(existsSync(getToolOutputDir())).toBe(false)
+  })
+
+  test('drop mode lists the saved images of dropped turns', () => {
+    const fit = fitHistoryWithStage(chatWithImage(), 198, { saveImage: saveHistoryImage })
+    expect(fit.stage).toBe('drop')
+    assertWellFormed(fit.history)
+    const bridge = fit.history[1]!.assistantResponseMessage!.content
+    expect(bridge).toContain('earlier conversation turns were omitted')
+    expect(bridge).toContain('Images the user shared in the omitted turns:')
+    const path = bridge.match(/saved to (\S+); use Read/)![1]!
+    expect(new Uint8Array(readFileSync(path))).toEqual(PNG)
+    expect(JSON.stringify(fit.history.slice(2)).includes('saved to')).toBe(false)
+  })
+
+  test('drop mode without a saver keeps the original note', () => {
+    const bridge = fitHistoryWithStage(chatWithImage(), 198).history[1]!.assistantResponseMessage!
+      .content
+    expect(bridge).not.toContain('Images the user shared')
+  })
+
+  test('kept turns keep their real images', () => {
+    const history = chatWithImage()
+    const last = history.at(-1)!
+    last.userInputMessage!.images = [{ format: 'png', source: { bytes: PNG } }]
+    const fit = fitHistoryWithStage(history, 198, {
+      compressOverflow: true,
+      saveImage: saveHistoryImage
+    })
+    expect(fit.history.at(-1)).toBe(last)
+  })
+
+  test('is wired through transformToSdkRequest and gated by compress_save_truncated_output', () => {
+    const dataUrl = `data:image/png;base64,${Buffer.from(PNG).toString('base64')}`
+    const messages: any[] = [{ role: 'user', content: 'start' }]
+    for (let i = 0; i < 120; i++) {
+      messages.push({ role: 'assistant', content: `answer ${i}` })
+      messages.push({
+        role: 'user',
+        content:
+          i === 1
+            ? [
+                { type: 'text', text: `question ${i}` },
+                { type: 'image_url', image_url: { url: dataUrl } }
+              ]
+            : `question ${i}`
+      })
+    }
+    const body = { system: 'You are helpful', messages, tools: [] }
+    const run = (effort: Record<string, unknown>) =>
+      (transformToSdkRequest(body, 'claude-opus-5-5', auth, false, 20000, undefined, effort) as any)
+        .conversationState.history as CodeWhispererMessage[]
+
+    const compressed = run({ compressOverflowHistory: true })[0]!.userInputMessage!.content
+    expect(compressed).toMatch(/User: \[image 1 \(image\/png, 1 KB\) saved to \S+\.png; use Read/)
+
+    const dropped = run({})[1]!.assistantResponseMessage!.content
+    expect(dropped).toMatch(/saved to \S+\.png; use Read/)
+
+    rmSync(join(dataHome, 'opencode'), { recursive: true, force: true })
+    resetTruncatedOutputCache()
+    const off = run({ compressOverflowHistory: true, compressSaveTruncatedOutput: false })[0]!
+      .userInputMessage!.content
+    expect(off).toContain('[image 1 (image/png, 1 KB) omitted]')
+    expect(existsSync(getToolOutputDir())).toBe(false)
   })
 })

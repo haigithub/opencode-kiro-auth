@@ -26,7 +26,7 @@ import {
 } from './image-handler.js'
 import * as logger from './logger.js'
 import { resolveKiroModel } from './models.js'
-import { saveTruncatedText } from './truncated-output-store.js'
+import { saveHistoryImage, saveTruncatedText } from './truncated-output-store.js'
 import type {
   CodeWhispererRequest,
   Effort,
@@ -272,7 +272,8 @@ function buildCodeWhispererRequest(
       toolInputMaxChars:
         historyLimits.compressToolInputMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_INPUT_MAX_CHARS,
       saveTruncatedText:
-        (historyLimits.compressSaveTruncatedOutput ?? true) ? saveTruncatedText : undefined
+        (historyLimits.compressSaveTruncatedOutput ?? true) ? saveTruncatedText : undefined,
+      saveImage: (historyLimits.compressSaveTruncatedOutput ?? true) ? saveHistoryImage : undefined
     }
   )
   history = fit.history
