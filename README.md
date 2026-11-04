@@ -268,6 +268,7 @@ Edit `~/.config/opencode/kiro.json`:
   "auto_effort_mapping": true,
   "compress_overflow_history": false,
   "max_history_entries": 198,
+  "history_trim_target": 0.75,
   "compress_tool_result_max_chars": 8000,
   "compress_tool_input_max_chars": 4000,
   "compress_save_truncated_output": true,
@@ -308,6 +309,13 @@ Edit `~/.config/opencode/kiro.json`:
   lower it for extra headroom, raise it only if Kiro raises its limit. Env override:
   `KIRO_MAX_HISTORY_ENTRIES` (values outside 10-10000 or non-integers are ignored with a
   warning).
+- `history_trim_target`: Low-water mark as a fraction of `max_history_entries` (0.1-1,
+  default `0.75`, i.e. 148 of 198). Once history exceeds the limit, folding, dropping or
+  compressing cuts it down to that size in one step. The cut point then stays fixed while
+  the conversation grows back to the limit, so the prompt prefix Kiro sees is unchanged
+  for many turns instead of shifting every turn. `1` trims only what is needed each turn.
+  A lower value keeps the prefix stable for longer but, in drop mode, drops more turns at
+  once. Env override: `KIRO_HISTORY_TRIM_TARGET`.
 - `compress_tool_result_max_chars` / `compress_tool_input_max_chars`: Only used with
   `compress_overflow_history`. Caps each old tool result (default `8000`) and tool call
   input (default `4000`) written into the transcript, keeping the head and tail (cut at

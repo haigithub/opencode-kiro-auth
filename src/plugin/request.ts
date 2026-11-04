@@ -43,14 +43,18 @@ interface TransformResult {
   toolNameMap: ToolNameMap
 }
 
-interface EffortConfig {
-  effort?: Effort
-  autoEffortMapping?: boolean
+interface HistoryLimitConfig {
   compressOverflowHistory?: boolean
   maxHistoryEntries?: number
+  historyTrimTarget?: number
   compressToolResultMaxChars?: number
   compressToolInputMaxChars?: number
   compressSaveTruncatedOutput?: boolean
+}
+
+interface EffortConfig extends HistoryLimitConfig {
+  effort?: Effort
+  autoEffortMapping?: boolean
 }
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
@@ -62,11 +66,7 @@ function buildCodeWhispererRequest(
   think = false,
   budget = 20000,
   showToast?: ToastFunction,
-  compressOverflowHistory = false,
-  maxHistoryEntries: number = KIRO_CONSTANTS.MAX_HISTORY_ENTRIES,
-  compressToolResultMaxChars: number = KIRO_CONSTANTS.COMPRESS_TOOL_RESULT_MAX_CHARS,
-  compressToolInputMaxChars: number = KIRO_CONSTANTS.COMPRESS_TOOL_INPUT_MAX_CHARS,
-  compressSaveTruncatedOutput = true
+  historyLimits: HistoryLimitConfig = {}
 ): TransformResult {
   const req = typeof body === 'string' ? JSON.parse(body) : body
   const { messages, tools, system } = req
@@ -261,12 +261,20 @@ function buildCodeWhispererRequest(
   }
 
   const builtLength = history.length
-  const fit = fitHistoryWithStage(history, maxHistoryEntries, {
-    compressOverflow: compressOverflowHistory,
-    toolResultMaxChars: compressToolResultMaxChars,
-    toolInputMaxChars: compressToolInputMaxChars,
-    saveTruncatedText: compressSaveTruncatedOutput ? saveTruncatedText : undefined
-  })
+  const fit = fitHistoryWithStage(
+    history,
+    historyLimits.maxHistoryEntries ?? KIRO_CONSTANTS.MAX_HISTORY_ENTRIES,
+    {
+      compressOverflow: historyLimits.compressOverflowHistory ?? false,
+      trimRatio: historyLimits.historyTrimTarget ?? KIRO_CONSTANTS.HISTORY_TRIM_TARGET,
+      toolResultMaxChars:
+        historyLimits.compressToolResultMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_RESULT_MAX_CHARS,
+      toolInputMaxChars:
+        historyLimits.compressToolInputMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_INPUT_MAX_CHARS,
+      saveTruncatedText:
+        (historyLimits.compressSaveTruncatedOutput ?? true) ? saveTruncatedText : undefined
+    }
+  )
   history = fit.history
   if (fit.stage !== 'none') {
     logger.log(
@@ -383,11 +391,7 @@ export function transformToSdkRequest(
     think,
     budget,
     showToast,
-    effortConfig?.compressOverflowHistory ?? false,
-    effortConfig?.maxHistoryEntries ?? KIRO_CONSTANTS.MAX_HISTORY_ENTRIES,
-    effortConfig?.compressToolResultMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_RESULT_MAX_CHARS,
-    effortConfig?.compressToolInputMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_INPUT_MAX_CHARS,
-    effortConfig?.compressSaveTruncatedOutput ?? true
+    effortConfig
   )
 
   // Resolve effort level based on config and model capabilities

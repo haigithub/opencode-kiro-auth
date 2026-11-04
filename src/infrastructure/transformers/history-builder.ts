@@ -480,6 +480,12 @@ export interface HistoryFitOptions {
   toolInputMaxChars?: number
   /** Compress mode: stores the full text of truncated items so the marker can link to it. */
   saveTruncatedText?: TruncatedTextSaver
+  /**
+   * Low-water mark as a fraction of the limit (0-1]. Once history exceeds the limit it is
+   * cut down to between floor(limit * ratio) and the limit, in fixed steps, so the cut point
+   * stays put for many turns. Defaults to 1 (trim only what is needed).
+   */
+  trimRatio?: number
 }
 
 // Smallest limit that still leaves the system-prompt turn plus one assistant entry.
@@ -490,6 +496,23 @@ function normalizeMaxEntries(maxEntries: number): number {
   return Math.max(MIN_HISTORY_ENTRIES, Math.floor(maxEntries))
 }
 
+function targetEntriesFor(trimRatio: number | undefined, maxEntries: number): number {
+  if (trimRatio === undefined || !Number.isFinite(trimRatio) || trimRatio >= 1) return maxEntries
+  return Math.max(MIN_HISTORY_ENTRIES, Math.floor(maxEntries * Math.max(0, trimRatio)))
+}
+
+/**
+ * Length to cut an over-limit history down to. The amount removed is a whole number of
+ * steps of (max - target + 1) entries, so the result lands in [target, max] and stays the
+ * same cut point while the history grows by up to one step. The result depends only on the
+ * length, because the plugin keeps no state between requests.
+ */
+function trimmedLength(length: number, maxEntries: number, targetEntries: number): number {
+  if (length <= maxEntries) return length
+  const step = maxEntries - targetEntries + 1
+  return length - Math.ceil((length - maxEntries) / step) * step
+}
+
 export function fitHistoryWithStage(
   history: CodeWhispererMessage[],
   requestedMaxEntries: number = KIRO_CONSTANTS.MAX_HISTORY_ENTRIES,
@@ -497,8 +520,13 @@ export function fitHistoryWithStage(
 ): { history: CodeWhispererMessage[]; stage: HistoryFitStage } {
   const maxEntries = normalizeMaxEntries(requestedMaxEntries)
   if (history.length <= maxEntries) return { history, stage: 'none' }
-  const folded = foldToolCallPairs(history, maxEntries)
+  const targetEntries = targetEntriesFor(options.trimRatio, maxEntries)
+  const folded = foldToolCallPairs(
+    history,
+    trimmedLength(history.length, maxEntries, targetEntries)
+  )
   if (folded.length <= maxEntries) return { history: folded, stage: 'fold' }
+  const keep = trimmedLength(folded.length, maxEntries, targetEntries)
   if (options.compressOverflow) {
     const limits = {
       toolResultMaxChars:
@@ -506,9 +534,9 @@ export function fitHistoryWithStage(
       toolInputMaxChars: options.toolInputMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_INPUT_MAX_CHARS,
       save: options.saveTruncatedText
     }
-    return { history: compressOldestTurns(folded, maxEntries, limits), stage: 'compress' }
+    return { history: compressOldestTurns(folded, keep, limits), stage: 'compress' }
   }
-  return { history: dropOldestTurns(folded, maxEntries), stage: 'drop' }
+  return { history: dropOldestTurns(folded, keep), stage: 'drop' }
 }
 
 export function fitHistoryToEntryLimit(
