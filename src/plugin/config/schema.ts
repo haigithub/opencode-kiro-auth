@@ -120,8 +120,9 @@ export const KiroConfigSchema = z.object({
   compress_tool_result_max_chars: z.number().int().min(0).max(1000000).default(8000),
   compress_tool_input_max_chars: z.number().int().min(0).max(1000000).default(4000),
 
-  // compress_overflow_history only: save the full text of each truncated transcript item
-  // under OpenCode's tool-output directory and point the truncation marker at it.
+  // Save the full text of each truncated compress-transcript item, and the images of
+  // condensed or dropped turns, under OpenCode's tool-output directory and point the
+  // transcript (or drop note) at the saved files so the model can Read them back.
   compress_save_truncated_output: z.boolean().default(true),
 
   // Expose Kiro's server-side web search as a `kiro_web_search` tool. Kiro runs

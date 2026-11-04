@@ -322,7 +322,11 @@ function droppedLeadReply(history: CodeWhispererMessage[], start: number): strin
  * system prompt). The kept tail starts at an assistant entry so every retained toolResult
  * still follows the assistant toolUses it answers.
  */
-function dropOldestTurns(history: CodeWhispererMessage[], maxEntries: number) {
+function dropOldestTurns(
+  history: CodeWhispererMessage[],
+  maxEntries: number,
+  saveImage?: HistoryImageSaver
+) {
   const head = history[0]?.userInputMessage ? [history[0]] : []
   let start = history.length - (maxEntries - head.length)
   while (start < history.length && !history[start]?.assistantResponseMessage) start++
@@ -332,7 +336,8 @@ function dropOldestTurns(history: CodeWhispererMessage[], maxEntries: number) {
 
   const first = history[start]!.assistantResponseMessage!
   const lead = head.length ? droppedLeadReply(history, start) : ''
-  const content = [lead, OMITTED_HISTORY_NOTE, first.content].filter(Boolean).join('\n\n')
+  const images = droppedImageNote(history.slice(head.length, start), saveImage)
+  const content = [lead, OMITTED_HISTORY_NOTE, images, first.content].filter(Boolean).join('\n\n')
   return [...head, { assistantResponseMessage: { ...first, content } }, ...history.slice(start + 1)]
 }
 
@@ -366,6 +371,42 @@ function escapeTranscriptTags(text: string): string {
 
 /** Persists the full text of a truncated item; returns its path, or undefined on failure. */
 export type TruncatedTextSaver = (text: string) => string | undefined
+
+/** Persists an image from a condensed or dropped turn; returns its path, or undefined. */
+export type HistoryImageSaver = (bytes: Uint8Array, format: string) => string | undefined
+
+type HistoryImage = NonNullable<
+  NonNullable<CodeWhispererMessage['userInputMessage']>['images']
+>[number]
+
+function formatBytes(bytes: number): string {
+  return bytes >= 1024 * 1024
+    ? `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    : `${Math.max(1, Math.round(bytes / 1024))} KB`
+}
+
+/**
+ * One line per image. With a saver the line carries the saved path, so the model can Read
+ * the image again; otherwise (or when saving fails) it only notes that an image was there.
+ */
+function describeImages(images: HistoryImage[], save?: HistoryImageSaver): string[] {
+  return images.map((image, i) => {
+    const kind = `image/${image.format}, ${formatBytes(image.source.bytes.byteLength)}`
+    const path = save?.(image.source.bytes, image.format)
+    return path
+      ? `[image ${i + 1} (${kind}) saved to ${path}; use Read to view it]`
+      : `[image ${i + 1} (${kind}) omitted]`
+  })
+}
+
+function droppedImageNote(entries: CodeWhispererMessage[], save?: HistoryImageSaver): string {
+  if (!save) return ''
+  const images = entries.flatMap((e) => e.userInputMessage?.images ?? [])
+  if (!images.length) return ''
+  return ['Images the user shared in the omitted turns:', ...describeImages(images, save)].join(
+    '\n'
+  )
+}
 
 /**
  * Keep the head and tail of text longer than maxChars around a truncation marker, cutting
@@ -412,6 +453,7 @@ interface TranscriptLimits {
   toolResultMaxChars: number
   toolInputMaxChars: number
   save?: TruncatedTextSaver
+  saveImage?: HistoryImageSaver
 }
 
 function renderTranscript(entries: CodeWhispererMessage[], limits: TranscriptLimits): string {
@@ -441,7 +483,9 @@ function renderTranscript(entries: CodeWhispererMessage[], limits: TranscriptLim
     }
     const text = transcriptText(user.content)
     if (text) lines.push(`User: ${text}`)
-    if (user.images?.length) lines.push(`User: [${user.images.length} image(s) omitted]`)
+    for (const line of describeImages(user.images ?? [], limits.saveImage)) {
+      lines.push(`User: ${line}`)
+    }
   }
   return lines.join('\n\n')
 }
@@ -458,10 +502,10 @@ function compressOldestTurns(
   limits: TranscriptLimits
 ) {
   const head = history[0]?.userInputMessage
-  if (!head) return dropOldestTurns(history, maxEntries)
+  if (!head) return dropOldestTurns(history, maxEntries, limits.saveImage)
   let start = history.length - (maxEntries - 1)
   while (start < history.length && !history[start]?.assistantResponseMessage) start++
-  if (start >= history.length) return dropOldestTurns(history, maxEntries)
+  if (start >= history.length) return dropOldestTurns(history, maxEntries, limits.saveImage)
 
   const transcript = escapeTranscriptTags(renderTranscript(history.slice(1, start), limits))
   const content = transcript
@@ -480,6 +524,8 @@ export interface HistoryFitOptions {
   toolInputMaxChars?: number
   /** Compress mode: stores the full text of truncated items so the marker can link to it. */
   saveTruncatedText?: TruncatedTextSaver
+  /** Compress and drop modes: stores images from removed turns so the model can Read them. */
+  saveImage?: HistoryImageSaver
   /**
    * Low-water mark as a fraction of the limit (0-1]. Once history exceeds the limit it is
    * cut down to between floor(limit * ratio) and the limit, in fixed steps, so the cut point
@@ -532,11 +578,12 @@ export function fitHistoryWithStage(
       toolResultMaxChars:
         options.toolResultMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_RESULT_MAX_CHARS,
       toolInputMaxChars: options.toolInputMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_INPUT_MAX_CHARS,
-      save: options.saveTruncatedText
+      save: options.saveTruncatedText,
+      saveImage: options.saveImage
     }
     return { history: compressOldestTurns(folded, keep, limits), stage: 'compress' }
   }
-  return { history: dropOldestTurns(folded, keep), stage: 'drop' }
+  return { history: dropOldestTurns(folded, keep, options.saveImage), stage: 'drop' }
 }
 
 export function fitHistoryToEntryLimit(
