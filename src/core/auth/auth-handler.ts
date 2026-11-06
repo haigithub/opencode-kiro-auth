@@ -2,12 +2,41 @@ import type { AuthHook } from '@opencode-ai/plugin'
 import type { AccountRepository } from '../../infrastructure/database/account-repository.js'
 import { RegionSchema } from '../../plugin/config/schema.js'
 import * as logger from '../../plugin/logger.js'
+import { writeUsageStatus } from '../../plugin/usage-status.js'
 import { summarizeUsage } from '../../plugin/usage.js'
 import { UsageTracker } from '../account/usage-tracker.js'
 import { IdcAuthMethod } from './idc-auth-method.js'
 import { TokenRefresher } from './token-refresher.js'
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
+
+/** Returns an error message for an invalid optional IAM Identity Center Start URL. */
+export function validateStartUrl(value: string): string | undefined {
+  if (!value) return undefined
+  try {
+    new URL(value)
+    return undefined
+  } catch {
+    return 'Please enter a valid URL'
+  }
+}
+
+/** Returns an error message for an invalid optional IAM Identity Center region. */
+export function validateIdcRegion(value: string): string | undefined {
+  if (!value) return undefined
+  return RegionSchema.safeParse(value.trim()).success
+    ? undefined
+    : 'Please enter a valid AWS region'
+}
+
+/** Returns an error message unless a profile ARN is given or already configured. */
+export function validateProfileArn(value: string, configured?: string): string | undefined {
+  if (!value && configured) return undefined
+  if (!value) return 'Profile ARN is required for this method'
+  return value.startsWith('arn:aws:codewhisperer:') || value.startsWith('arn:aws:qdeveloper:')
+    ? undefined
+    : 'Please enter a valid CodeWhisperer or Q Developer profile ARN'
+}
 
 export class AuthHandler {
   private accountManager?: any
@@ -87,19 +116,30 @@ export class AuthHandler {
     const accounts = this.accountManager.getAccounts()
     if (!accounts.length) return
 
+    // With the status bar enabled, usage is shown there instead of in startup toasts.
+    const statusBar = this.config.usage_in_status_bar === true
+    const toast = statusBar ? undefined : showToast
+    if (statusBar) {
+      const healthy = accounts.filter((a: any) => a.isHealthy)
+      const current = [...(healthy.length ? healthy : accounts)].sort(
+        (a: any, b: any) => (b.lastUsed || 0) - (a.lastUsed || 0)
+      )[0]
+      if (current) writeUsageStatus(current)
+    }
+
     for (const acc of accounts) {
       const { used, limit, pct } = summarizeUsage(acc.usedCount ?? 0, acc.limitCount ?? 0)
       if (limit > 0) {
         const msg = `Kiro usage (${acc.email}): ${used}/${limit} (${pct}%)`
         logger.log(msg)
-        if (showToast) {
+        if (toast) {
           const variant = pct >= 90 ? 'warning' : 'info'
-          setTimeout(() => showToast(msg, variant), 3000)
+          setTimeout(() => toast(msg, variant), 3000)
         }
       } else if (used > 0) {
         const msg = `Kiro usage (${acc.email}): ${used} requests used`
         logger.log(msg)
-        if (showToast) setTimeout(() => showToast(msg, 'info'), 3000)
+        if (toast) setTimeout(() => toast(msg, 'info'), 3000)
       }
     }
   }
@@ -130,15 +170,7 @@ export class AuthHandler {
               ? `IAM Identity Center Start URL (current: ${configStartUrl}, leave blank to keep)`
               : 'IAM Identity Center Start URL (leave blank for AWS Builder ID)',
             placeholder: 'https://your-company.awsapps.com/start',
-            validate: (value: string) => {
-              if (!value) return undefined
-              try {
-                new URL(value)
-                return undefined
-              } catch {
-                return 'Please enter a valid URL'
-              }
-            }
+            validate: validateStartUrl
           },
           {
             type: 'text' as const,
@@ -148,12 +180,7 @@ export class AuthHandler {
                 ? `IAM Identity Center region (sso_region) (current: ${configRegion}, leave blank to keep)`
                 : 'IAM Identity Center region (sso_region) (leave blank for us-east-1)',
             placeholder: 'us-east-1',
-            validate: (value: string) => {
-              if (!value) return undefined
-              return RegionSchema.safeParse(value.trim()).success
-                ? undefined
-                : 'Please enter a valid AWS region'
-            }
+            validate: validateIdcRegion
           }
         ],
         authorize: (inputs?: any) => idcMethod.authorize(inputs)
@@ -169,15 +196,7 @@ export class AuthHandler {
               ? `IAM Identity Center Start URL (current: ${configStartUrl}, leave blank to keep)`
               : 'IAM Identity Center Start URL (leave blank for AWS Builder ID)',
             placeholder: 'https://your-company.awsapps.com/start',
-            validate: (value: string) => {
-              if (!value) return undefined
-              try {
-                new URL(value)
-                return undefined
-              } catch {
-                return 'Please enter a valid URL'
-              }
-            }
+            validate: validateStartUrl
           },
           {
             type: 'text' as const,
@@ -187,12 +206,7 @@ export class AuthHandler {
                 ? `IAM Identity Center region (sso_region) (current: ${configRegion}, leave blank to keep)`
                 : 'IAM Identity Center region (sso_region) (leave blank for us-east-1)',
             placeholder: 'us-east-1',
-            validate: (value: string) => {
-              if (!value) return undefined
-              return RegionSchema.safeParse(value.trim()).success
-                ? undefined
-                : 'Please enter a valid AWS region'
-            }
+            validate: validateIdcRegion
           },
           {
             type: 'text' as const,
@@ -201,14 +215,7 @@ export class AuthHandler {
               ? `Profile ARN (current: ${this.config.idc_profile_arn}, leave blank to keep)`
               : 'Profile ARN (e.g. arn:aws:codewhisperer:eu-central-1:428597928572:profile/HE7XVERQ9VXW)',
             placeholder: 'arn:aws:codewhisperer:us-east-1:123456789012:profile/XXXXXXXXXX',
-            validate: (value: string) => {
-              if (!value && this.config.idc_profile_arn) return undefined
-              if (!value) return 'Profile ARN is required for this method'
-              return value.startsWith('arn:aws:codewhisperer:') ||
-                value.startsWith('arn:aws:qdeveloper:')
-                ? undefined
-                : 'Please enter a valid CodeWhisperer or Q Developer profile ARN'
-            }
+            validate: (value: string) => validateProfileArn(value, this.config.idc_profile_arn)
           }
         ],
         authorize: (inputs?: any) => idcMethod.authorize(inputs)

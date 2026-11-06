@@ -46,13 +46,26 @@ export const KIRO_CONSTANTS = {
   SDK_VERSION: '3.738.0',
   SDK_VERSION_USAGE: '3.0.0',
   CHAT_TRIGGER_TYPE_MANUAL: 'MANUAL',
-  ORIGIN_AI_EDITOR: 'AI_EDITOR'
+  ORIGIN_AI_EDITOR: 'AI_EDITOR',
+  // Kiro rejects conversationState.history with 200+ entries as CONTENT_LENGTH_EXCEEDS_THRESHOLD
+  // ("Input is too long"), regardless of byte or token size. 198 is the largest verified size.
+  MAX_HISTORY_ENTRIES: 198,
+  // Low-water mark as a fraction of MAX_HISTORY_ENTRIES: once history exceeds the limit it
+  // is trimmed down to about this share of it, so the trim boundary (and the cacheable
+  // prompt prefix) holds for many turns.
+  HISTORY_TRIM_TARGET: 0.75,
+  // Per-item character caps for tool results / tool inputs rendered into the compress-mode
+  // transcript. 0 disables the cap.
+  COMPRESS_TOOL_RESULT_MAX_CHARS: 8000,
+  COMPRESS_TOOL_INPUT_MAX_CHARS: 4000
 }
 
 export const MODEL_MAPPING: Record<string, string> = {
   // Claude Haiku
   'claude-haiku-4-5': 'claude-haiku-4.5',
   'claude-haiku-4-5-thinking': 'claude-haiku-4.5',
+  'claude-haiku-5-5': 'claude-haiku-5.5',
+  'claude-haiku-5-5-thinking': 'claude-haiku-5.5',
   // Claude Sonnet
   'claude-sonnet-4': 'claude-sonnet-4',
   'claude-sonnet-4-5': 'claude-sonnet-4.5',
@@ -67,6 +80,10 @@ export const MODEL_MAPPING: Record<string, string> = {
   'claude-sonnet-5-thinking': 'claude-sonnet-5',
   'claude-sonnet-5-1m': 'claude-sonnet-5-1m',
   'claude-sonnet-5-1m-thinking': 'claude-sonnet-5-1m',
+  'claude-sonnet-5-5': 'claude-sonnet-5.5',
+  'claude-sonnet-5-5-thinking': 'claude-sonnet-5.5',
+  'claude-sonnet-5-5-1m': 'claude-sonnet-5.5-1m',
+  'claude-sonnet-5-5-1m-thinking': 'claude-sonnet-5.5-1m',
   // Claude Opus
   'claude-opus-4-5': 'claude-opus-4.5',
   'claude-opus-4-5-thinking': 'claude-opus-4.5',
@@ -80,6 +97,8 @@ export const MODEL_MAPPING: Record<string, string> = {
   'claude-opus-4-8-thinking': 'claude-opus-4.8',
   'claude-opus-5': 'claude-opus-5',
   'claude-opus-5-thinking': 'claude-opus-5',
+  'claude-opus-5-5': 'claude-opus-5.5',
+  'claude-opus-5-5-thinking': 'claude-opus-5.5',
   // Auto
   auto: 'auto',
   // Open weight models

@@ -29,7 +29,18 @@ models with substantial trial quotas.
 
 ## Installation
 
-Add the plugin to your `opencode.json` or `opencode.jsonc`:
+The same package works on OpenCode V1 (1.18.29 or newer) and OpenCode V2. Add it
+to your `opencode.json` or `opencode.jsonc`.
+
+OpenCode V2:
+
+```json
+{
+  "plugins": ["@zhafron/opencode-kiro-auth"]
+}
+```
+
+OpenCode V1:
 
 ```json
 {
@@ -37,13 +48,67 @@ Add the plugin to your `opencode.json` or `opencode.jsonc`:
 }
 ```
 
+V2 also accepts the V1 `plugin` key, so an existing config keeps working after
+upgrading OpenCode.
+
 That is the whole configuration. The plugin registers the `kiro` provider and
 advertises every model Kiro exposes, including a `-thinking` companion for each
 model that supports reasoning effort. Run `/models` to pick one.
 
-Defining `provider.kiro.models` yourself replaces the plugin's registry entirely.
-Only do that to rename or restrict models, and see the reasoning flags below if
-any of them are `-thinking` models.
+### OpenCode V2 differences
+
+- Pick a thinking level with the model reference, e.g.
+  `kiro/claude-opus-5-thinking#xhigh`, or cycle variants in the UI.
+- The `reasoning` / `interleaved` flags described below are V1-only. V2 ignores
+  them and renders Kiro's reasoning without any model flags.
+- V2 server plugins cannot show toasts. Usage summaries and re-authentication
+  notices go to `~/.config/opencode/kiro-logs/plugin.log` instead. To see usage
+  in the UI, enable [`usage_in_status_bar`](#usage-in-the-status-bar).
+- Automatic re-authentication from inside a request is V1-only. On V2, run
+  `opencode auth login kiro` (or `kiro-cli login`) when the plugin reports that
+  all accounts need re-authentication.
+- Leave `npm` / `package` out of any `provider.kiro` entry. On V2 the plugin
+  pins its own package per model, but older docs suggested setting `npm`, and
+  you no longer need it on either version.
+
+On V1, defining `provider.kiro.models` yourself replaces the plugin's registry
+entirely. Only do that to rename or restrict models, and see the reasoning flags
+below if any of them are `-thinking` models. On V2, models you define are merged
+onto the plugin's registry instead.
+
+### Usage in the status bar
+
+By default the plugin shows Kiro usage in toasts: a summary a few seconds after
+startup, and a warning on requests once an account passes 90% of its limit. Set
+`usage_in_status_bar` to `true` in `~/.config/opencode/kiro.json` to drop those
+toasts and keep the current account's usage in the status bar instead:
+
+```json
+{
+  "usage_in_status_bar": true
+}
+```
+
+The text reads `Usage: 9031.65/2000 (452%)` and updates after each request.
+
+- **OpenCode V2**: it is appended to the prompt footer, after the context usage
+  and the `ctrl+p commands` hint. The TUI part loads from the same `plugins`
+  entry; nothing else to configure.
+- **OpenCode V1**: it is shown at the right end of the prompt's agent/model row.
+  V1 loads TUI plugins from a separate file, so also add the plugin to
+  `~/.config/opencode/tui.json`:
+
+  ```json
+  {
+    "plugin": ["@zhafron/opencode-kiro-auth"]
+  }
+  ```
+
+  Without that entry, V1 shows usage neither in toasts nor in the status bar.
+
+OpenCode's plugin API has no slot directly after the context usage on V1, which
+is why the two versions place the text differently. Restart OpenCode after
+changing the setting. Env override: `KIRO_USAGE_IN_STATUS_BAR`.
 
 ### Thinking Effort Configuration
 
@@ -70,6 +135,23 @@ If you override `provider.kiro.models` in your own config, you replace the
 plugin's registry wholesale — copy both fields onto any `-thinking` model you
 define, or reasoning will stop rendering.
 
+On OpenCode V2, a native `providers.kiro.models` override needs no reasoning
+flags. Put the budget in each variant's `settings`:
+
+```json
+{
+  "providers": {
+    "kiro": {
+      "models": {
+        "claude-opus-5-thinking": {
+          "variants": [{ "id": "high", "settings": { "thinkingConfig": { "thinkingBudget": 65536 } } }]
+        }
+      }
+    }
+  }
+}
+```
+
 Reasoning itself comes from the API: Kiro streams `reasoningContentEvent` on
 thinking models, and the plugin forwards each one as a `reasoning_content` delta.
 Nothing needs to be enabled for that. Models that instead inline reasoning as
@@ -88,7 +170,8 @@ reachable from a budget alone:
 | `<= 98304` | `xhigh` |
 | `> 98304` | `max` |
 
-`xhigh` is only available on opus-4.7, opus-4.8, opus-5 and sonnet-5. Those models
+`xhigh` is only available on opus-4.7, opus-4.8, opus-5, opus-5.5, sonnet-5 and
+sonnet-5.5. Those models
 get a five-variant ladder; the rest get four, and a budget in the `xhigh` band is
 clamped to `max`.
 
@@ -217,7 +300,14 @@ Edit `~/.config/opencode/kiro.json`:
   "token_expiry_buffer_ms": 120000,
   "usage_sync_max_retries": 3,
   "usage_tracking_enabled": true,
+  "usage_in_status_bar": false,
   "auto_effort_mapping": true,
+  "compress_overflow_history": false,
+  "max_history_entries": 198,
+  "history_trim_target": 0.75,
+  "compress_tool_result_max_chars": 8000,
+  "compress_tool_input_max_chars": 4000,
+  "compress_save_truncated_output": true,
   "enable_log_api_request": false
 }
 ```
@@ -242,8 +332,48 @@ Edit `~/.config/opencode/kiro.json`:
 - `auth_server_port_start`: Legacy/ignored (no local auth server).
 - `auth_server_port_range`: Legacy/ignored (no local auth server).
 - `usage_tracking_enabled`: Enable usage tracking and toast notifications.
+- `usage_in_status_bar`: Show the current account's usage in the status bar instead
+  of usage toasts (default: `false`). On OpenCode V1 this also needs a `tui.json`
+  entry; see [Usage in the status bar](#usage-in-the-status-bar). Env override:
+  `KIRO_USAGE_IN_STATUS_BAR`.
 - `auto_effort_mapping`: Automatically map OpenCode thinking budgets to Kiro effort
   levels for supported models (default: `true`).
+- `compress_overflow_history`: Kiro rejects conversations with 200 or more history
+  entries. The plugin first folds older tool loops; if that is not enough, it drops the
+  oldest turns (default, `false`), carrying over the reply to the first user turn (where
+  OpenCode keeps its compaction summary). Set to `true` to condense those turns into a
+  text transcript inside the first user turn instead, so their content stays visible to
+  the model. Env override: `KIRO_COMPRESS_OVERFLOW_HISTORY`.
+- `max_history_entries`: Maximum history entries sent to Kiro before folding, dropping or
+  compressing kicks in (10-10000, default `198`). Kiro currently rejects 200 or more;
+  lower it for extra headroom, raise it only if Kiro raises its limit. Env override:
+  `KIRO_MAX_HISTORY_ENTRIES` (values outside 10-10000 or non-integers are ignored with a
+  warning).
+- `history_trim_target`: Low-water mark as a fraction of `max_history_entries` (0.1-1,
+  default `0.75`, i.e. 148 of 198). Once history exceeds the limit, folding, dropping or
+  compressing cuts it down to that size in one step. The cut point then stays fixed while
+  the conversation grows back to the limit, so the prompt prefix Kiro sees is unchanged
+  for many turns instead of shifting every turn. `1` trims only what is needed each turn.
+  A lower value keeps the prefix stable for longer but, in drop mode, drops more turns at
+  once. Env override: `KIRO_HISTORY_TRIM_TARGET`.
+- `compress_tool_result_max_chars` / `compress_tool_input_max_chars`: Only used with
+  `compress_overflow_history`. Caps each old tool result (default `8000`) and tool call
+  input (default `4000`) written into the transcript, keeping the head and tail (cut at
+  line breaks where possible) around a `[... N chars truncated ...]` marker. Recent turns
+  kept as real entries are never truncated. `0` disables the cap (0-1000000). Env
+  overrides: `KIRO_COMPRESS_TOOL_RESULT_MAX_CHARS`, `KIRO_COMPRESS_TOOL_INPUT_MAX_CHARS`.
+- `compress_save_truncated_output`: Saves content that would otherwise leave the history
+  to OpenCode's tool-output directory (`~/.local/share/opencode/tool-output/tool_kiro_<hash>`,
+  mode `0600`) and names the file, so the model can Read or Grep it back:
+  - with `compress_overflow_history`, the full text of each truncated transcript item;
+  - in both compress and drop modes, the images of condensed or dropped turns (saved
+    as `tool_kiro_<hash>.<png|jpeg|gif|webp>` and listed in the transcript or in the drop
+    note).
+
+  File names are content hashes, so the transcript is identical across requests; OpenCode
+  removes the files once they are 7 days old. If a file cannot be written, the transcript
+  falls back to plain head+tail truncation or `[image N ... omitted]` (default: `true`).
+  Env override: `KIRO_COMPRESS_SAVE_TRUNCATED_OUTPUT`.
 - `enable_log_api_request`: Enable detailed API request logging. Request logs
   include the resolved `additionalModelRequestFields`, so this is how you confirm
   which effort level actually went out on the wire.
@@ -254,11 +384,13 @@ Edit `~/.config/opencode/kiro.json`:
 
 - SQLite Database: `~/.config/opencode/kiro.db`
 - Plugin Config: `~/.config/opencode/kiro.json`
+- Status bar usage (with `usage_in_status_bar`): `~/.config/opencode/kiro-usage-status.json`
 
 **Windows:**
 
 - SQLite Database: `%APPDATA%\opencode\kiro.db`
 - Plugin Config: `%APPDATA%\opencode\kiro.json`
+- Status bar usage (with `usage_in_status_bar`): `%APPDATA%\opencode\kiro-usage-status.json`
 
 ## Acknowledgements
 

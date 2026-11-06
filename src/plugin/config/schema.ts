@@ -80,6 +80,9 @@ export const KiroConfigSchema = z.object({
   auth_server_port_range: z.number().min(1).max(100).default(10),
 
   usage_tracking_enabled: z.boolean().default(true),
+  // Show the current account's usage in the TUI status bar instead of toasts.
+  // Needs the plugin's TUI part to be loaded (on OpenCode V1, list the plugin in tui.json).
+  usage_in_status_bar: z.boolean().default(false),
   auto_sync_kiro_cli: z.boolean().default(true),
   enable_log_api_request: z.boolean().default(false),
 
@@ -96,6 +99,34 @@ export const KiroConfigSchema = z.object({
    * When false, only uses explicit effort config or falls back to 'medium'.
    */
   auto_effort_mapping: z.boolean().default(true),
+
+  // When conversationState.history still exceeds Kiro's entry limit after folding
+  // tool loops, condense the oldest turns into a text transcript inside the first
+  // user turn instead of dropping them. Off by default (drop the oldest turns).
+  compress_overflow_history: z.boolean().default(false),
+
+  // Upper bound on conversationState.history entries sent to Kiro. Kiro rejects 200+
+  // entries as "Input is too long"; 198 is the largest verified size. Raise only if
+  // Kiro raises its limit. Mirrors KIRO_CONSTANTS.MAX_HISTORY_ENTRIES.
+  max_history_entries: z.number().int().min(10).max(10000).default(198),
+
+  // Low-water mark as a fraction of max_history_entries. Once history exceeds the limit it
+  // is trimmed down to floor(max_history_entries * history_trim_target) entries in one
+  // step, so the cut point (and Kiro's cacheable prompt prefix) stays fixed for many turns
+  // instead of moving every turn. 1 trims only what is needed. Mirrors
+  // KIRO_CONSTANTS.HISTORY_TRIM_TARGET.
+  history_trim_target: z.number().min(0.1).max(1).default(0.75),
+
+  // compress_overflow_history only: per-item character caps for old tool results and
+  // tool call inputs written into the transcript. Longer text keeps its head and tail
+  // around a truncation marker. 0 disables the cap.
+  compress_tool_result_max_chars: z.number().int().min(0).max(1000000).default(8000),
+  compress_tool_input_max_chars: z.number().int().min(0).max(1000000).default(4000),
+
+  // Save the full text of each truncated compress-transcript item, and the images of
+  // condensed or dropped turns, under OpenCode's tool-output directory and point the
+  // transcript (or drop note) at the saved files so the model can Read them back.
+  compress_save_truncated_output: z.boolean().default(true),
 
   // Expose Kiro's server-side web search as a `kiro_web_search` tool. Kiro runs
   // the search on its own infrastructure (billed as Kiro credits) and returns
@@ -119,8 +150,15 @@ export const DEFAULT_CONFIG: KiroConfig = {
   auth_server_port_start: 19847,
   auth_server_port_range: 10,
   usage_tracking_enabled: true,
+  usage_in_status_bar: false,
   auto_sync_kiro_cli: true,
   enable_log_api_request: false,
   auto_effort_mapping: true,
+  compress_overflow_history: false,
+  max_history_entries: 198,
+  history_trim_target: 0.75,
+  compress_tool_result_max_chars: 8000,
+  compress_tool_input_max_chars: 4000,
+  compress_save_truncated_output: true,
   web_search_enabled: true
 }
