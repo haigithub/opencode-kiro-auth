@@ -80,6 +80,9 @@ export const KiroConfigSchema = z.object({
   auth_server_port_range: z.number().min(1).max(100).default(10),
 
   usage_tracking_enabled: z.boolean().default(true),
+  // Show the current account's usage in the TUI status bar instead of toasts.
+  // Needs the plugin's TUI part to be loaded (on OpenCode V1, list the plugin in tui.json).
+  usage_in_status_bar: z.boolean().default(false),
   auto_sync_kiro_cli: z.boolean().default(true),
   enable_log_api_request: z.boolean().default(false),
 
@@ -147,6 +150,7 @@ export const DEFAULT_CONFIG: KiroConfig = {
   auth_server_port_start: 19847,
   auth_server_port_range: 10,
   usage_tracking_enabled: true,
+  usage_in_status_bar: false,
   auto_sync_kiro_cli: true,
   enable_log_api_request: false,
   auto_effort_mapping: true,

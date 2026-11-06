@@ -2,12 +2,14 @@ import type { AccountRepository } from '../../infrastructure/database/account-re
 import type { AccountManager } from '../../plugin/accounts'
 import type { ManagedAccount } from '../../plugin/types'
 import { summarizeUsage } from '../../plugin/usage'
+import { writeUsageStatus } from '../../plugin/usage-status'
 
 type ToastFunction = (message: string, variant: 'info' | 'warning' | 'success' | 'error') => void
 
 interface AccountSelectorConfig {
   auto_sync_kiro_cli: boolean
   account_selection_strategy: 'sticky' | 'round-robin' | 'lowest-usage'
+  usage_in_status_bar?: boolean
 }
 
 export class AccountSelector {
@@ -56,7 +58,10 @@ export class AccountSelector {
 
     const used = acc.usedCount ?? 0
     const limit = acc.limitCount ?? 0
-    if (limit > 0 && used / limit >= 0.9 && this.accountManager.shouldShowUsageToast()) {
+    if (this.config.usage_in_status_bar) {
+      // The status bar shows usage permanently, so the high-usage toast is not needed.
+      writeUsageStatus(acc)
+    } else if (limit > 0 && used / limit >= 0.9 && this.accountManager.shouldShowUsageToast()) {
       showToast(this.formatUsageMessage(used, limit, acc.email || ''), 'warning')
     }
 

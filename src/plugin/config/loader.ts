@@ -182,6 +182,8 @@ function applyEnvOverrides(config: KiroConfig): KiroConfig {
       config.usage_tracking_enabled
     ),
 
+    usage_in_status_bar: parseBooleanEnv(env.KIRO_USAGE_IN_STATUS_BAR, config.usage_in_status_bar),
+
     enable_log_api_request: parseBooleanEnv(
       env.KIRO_ENABLE_LOG_API_REQUEST,
       config.enable_log_api_request
@@ -250,6 +252,11 @@ export function loadConfig(directory: string): KiroConfig {
 
 export function configExists(path: string): boolean {
   return existsSync(path)
+}
+
+/** Where the server plugin publishes the current account's usage for the TUI status bar. */
+export function getUsageStatusPath(): string {
+  return join(getConfigDir(), 'kiro-usage-status.json')
 }
 
 export function getDefaultLogsDir(): string {

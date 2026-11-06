@@ -2,6 +2,7 @@ import type { AuthHook } from '@opencode-ai/plugin'
 import type { AccountRepository } from '../../infrastructure/database/account-repository.js'
 import { RegionSchema } from '../../plugin/config/schema.js'
 import * as logger from '../../plugin/logger.js'
+import { writeUsageStatus } from '../../plugin/usage-status.js'
 import { summarizeUsage } from '../../plugin/usage.js'
 import { UsageTracker } from '../account/usage-tracker.js'
 import { IdcAuthMethod } from './idc-auth-method.js'
@@ -115,19 +116,30 @@ export class AuthHandler {
     const accounts = this.accountManager.getAccounts()
     if (!accounts.length) return
 
+    // With the status bar enabled, usage is shown there instead of in startup toasts.
+    const statusBar = this.config.usage_in_status_bar === true
+    const toast = statusBar ? undefined : showToast
+    if (statusBar) {
+      const healthy = accounts.filter((a: any) => a.isHealthy)
+      const current = [...(healthy.length ? healthy : accounts)].sort(
+        (a: any, b: any) => (b.lastUsed || 0) - (a.lastUsed || 0)
+      )[0]
+      if (current) writeUsageStatus(current)
+    }
+
     for (const acc of accounts) {
       const { used, limit, pct } = summarizeUsage(acc.usedCount ?? 0, acc.limitCount ?? 0)
       if (limit > 0) {
         const msg = `Kiro usage (${acc.email}): ${used}/${limit} (${pct}%)`
         logger.log(msg)
-        if (showToast) {
+        if (toast) {
           const variant = pct >= 90 ? 'warning' : 'info'
-          setTimeout(() => showToast(msg, variant), 3000)
+          setTimeout(() => toast(msg, variant), 3000)
         }
       } else if (used > 0) {
         const msg = `Kiro usage (${acc.email}): ${used} requests used`
         logger.log(msg)
-        if (showToast) setTimeout(() => showToast(msg, 'info'), 3000)
+        if (toast) setTimeout(() => toast(msg, 'info'), 3000)
       }
     }
   }
