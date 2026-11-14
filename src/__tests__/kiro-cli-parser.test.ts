@@ -2,8 +2,10 @@ import { describe, expect, test } from 'bun:test'
 import {
   findClientCredsRecursive,
   getCliDbPath,
+  isCliImportRedundant,
   makePlaceholderEmail,
   normalizeExpiresAt,
+  resolveCliRegions,
   safeJsonParse
 } from '../plugin/sync/kiro-cli-parser.js'
 
@@ -127,5 +129,62 @@ describe('makePlaceholderEmail', () => {
     const a = makePlaceholderEmail('idc', 'us-east-1', 'c1', 'arn1')
     const b = makePlaceholderEmail('idc', 'eu-central-1', 'c1', 'arn1')
     expect(a).not.toBe(b)
+  })
+})
+
+// ── resolveCliRegions ─────────────────────────────────────────────────────────
+
+describe('resolveCliRegions', () => {
+  const usEastArn = 'arn:aws:codewhisperer:us-east-1:123456789012:profile/ABC'
+
+  test('keeps OIDC region from kiro-cli when it differs from the profile region', () => {
+    // IdC in ap-southeast-1, Q profile in us-east-1: refresh must hit ap-southeast-1.
+    expect(resolveCliRegions({ region: 'ap-southeast-1' }, usEastArn)).toEqual({
+      serviceRegion: 'us-east-1',
+      oidcRegion: 'ap-southeast-1'
+    })
+  })
+
+  test('service region falls back to kiro-cli region without a profile ARN', () => {
+    expect(resolveCliRegions({ region: 'eu-central-1' }, undefined)).toEqual({
+      serviceRegion: 'eu-central-1',
+      oidcRegion: 'eu-central-1'
+    })
+  })
+
+  test('defaults both to us-east-1 when kiro-cli region is missing or invalid', () => {
+    expect(resolveCliRegions({}, undefined)).toEqual({
+      serviceRegion: 'us-east-1',
+      oidcRegion: 'us-east-1'
+    })
+    expect(resolveCliRegions({ region: 'not-a-region' }, undefined).oidcRegion).toBe('us-east-1')
+  })
+})
+
+// ── isCliImportRedundant ──────────────────────────────────────────────────────
+
+describe('isCliImportRedundant', () => {
+  const now = 1_000_000
+  const fresh = { is_healthy: 1, expires_at: now + 3600_000, oidc_region: 'ap-southeast-1' }
+
+  test('skips import when stored token is healthy, fresh and correctly routed', () => {
+    expect(isCliImportRedundant(fresh, now + 1000, 'ap-southeast-1', now)).toBe(true)
+  })
+
+  test('re-imports when the stored OIDC region is wrong', () => {
+    // Rows written by older versions carry the service region as oidc_region.
+    const misrouted = { ...fresh, oidc_region: 'us-east-1' }
+    expect(isCliImportRedundant(misrouted, now + 1000, 'ap-southeast-1', now)).toBe(false)
+  })
+
+  test('re-imports when there is no existing row, it is unhealthy, older, or expired', () => {
+    expect(isCliImportRedundant(undefined, now, 'ap-southeast-1', now)).toBe(false)
+    expect(isCliImportRedundant({ ...fresh, is_healthy: 0 }, now, 'ap-southeast-1', now)).toBe(
+      false
+    )
+    expect(isCliImportRedundant(fresh, fresh.expires_at + 1, 'ap-southeast-1', now)).toBe(false)
+    expect(
+      isCliImportRedundant({ ...fresh, expires_at: now - 1 }, now - 2, 'ap-southeast-1', now)
+    ).toBe(false)
   })
 })

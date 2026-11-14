@@ -1,3 +1,5 @@
+import { createHash } from 'crypto'
+import { hostname } from 'os'
 import { RegionSchema } from './plugin/config/schema'
 import type { KiroRegion } from './plugin/types'
 
@@ -35,6 +37,11 @@ export function extractRegionFromArn(arn: string | undefined): KiroRegion | unde
   return isValidRegion(region) ? (region as KiroRegion) : undefined
 }
 
+// Kiro rejects clients that do not report a supported IDE version
+// (UnsupportedClientVersionException, enforced since 2026-11-09, kirodotdev/Kiro#11335).
+// KIRO_IDE_VERSION lets users follow the next minimum-version bump without a release.
+export const KIRO_IDE_VERSION = process.env.KIRO_IDE_VERSION?.trim() || '1.4.178'
+
 export const KIRO_CONSTANTS = {
   REFRESH_URL: 'https://prod.{{region}}.auth.desktop.kiro.dev/refreshToken',
   REFRESH_IDC_URL: 'https://oidc.{{region}}.amazonaws.com/token',
@@ -42,17 +49,30 @@ export const KIRO_CONSTANTS = {
   USAGE_LIMITS_URL: 'https://q.{{region}}.amazonaws.com/getUsageLimits',
   DEFAULT_REGION: 'us-east-1' as KiroRegion,
   AXIOS_TIMEOUT: 120000,
-  USER_AGENT: 'KiroIDE',
+  USER_AGENT: `KiroIDE-${KIRO_IDE_VERSION}`,
   SDK_VERSION: '3.738.0',
   SDK_VERSION_USAGE: '3.0.0',
   CHAT_TRIGGER_TYPE_MANUAL: 'MANUAL',
-  ORIGIN_AI_EDITOR: 'AI_EDITOR'
+  ORIGIN_AI_EDITOR: 'AI_EDITOR',
+  // Kiro rejects conversationState.history with 200+ entries as CONTENT_LENGTH_EXCEEDS_THRESHOLD
+  // ("Input is too long"), regardless of byte or token size. 198 is the largest verified size.
+  MAX_HISTORY_ENTRIES: 198,
+  // Low-water mark as a fraction of MAX_HISTORY_ENTRIES: once history exceeds the limit it
+  // is trimmed down to about this share of it, so the trim boundary (and the cacheable
+  // prompt prefix) holds for many turns.
+  HISTORY_TRIM_TARGET: 0.75,
+  // Per-item character caps for tool results / tool inputs rendered into the compress-mode
+  // transcript. 0 disables the cap.
+  COMPRESS_TOOL_RESULT_MAX_CHARS: 8000,
+  COMPRESS_TOOL_INPUT_MAX_CHARS: 4000
 }
 
 export const MODEL_MAPPING: Record<string, string> = {
   // Claude Haiku
   'claude-haiku-4-5': 'claude-haiku-4.5',
   'claude-haiku-4-5-thinking': 'claude-haiku-4.5',
+  'claude-haiku-5-5': 'claude-haiku-5.5',
+  'claude-haiku-5-5-thinking': 'claude-haiku-5.5',
   // Claude Sonnet
   'claude-sonnet-4': 'claude-sonnet-4',
   'claude-sonnet-4-5': 'claude-sonnet-4.5',
@@ -67,6 +87,10 @@ export const MODEL_MAPPING: Record<string, string> = {
   'claude-sonnet-5-thinking': 'claude-sonnet-5',
   'claude-sonnet-5-1m': 'claude-sonnet-5-1m',
   'claude-sonnet-5-1m-thinking': 'claude-sonnet-5-1m',
+  'claude-sonnet-5-5': 'claude-sonnet-5.5',
+  'claude-sonnet-5-5-thinking': 'claude-sonnet-5.5',
+  'claude-sonnet-5-5-1m': 'claude-sonnet-5.5-1m',
+  'claude-sonnet-5-5-1m-thinking': 'claude-sonnet-5.5-1m',
   // Claude Opus
   'claude-opus-4-5': 'claude-opus-4.5',
   'claude-opus-4-5-thinking': 'claude-opus-4.5',
@@ -80,6 +104,8 @@ export const MODEL_MAPPING: Record<string, string> = {
   'claude-opus-4-8-thinking': 'claude-opus-4.8',
   'claude-opus-5': 'claude-opus-5',
   'claude-opus-5-thinking': 'claude-opus-5',
+  'claude-opus-5-5': 'claude-opus-5.5',
+  'claude-opus-5-5-thinking': 'claude-opus-5.5',
   // Auto
   auto: 'auto',
   // Open weight models
@@ -116,4 +142,13 @@ export const KIRO_AUTH_SERVICE = {
     'codewhisperer:transformations',
     'codewhisperer:taskassist'
   ]
+}
+
+/**
+ * Client id in the same shape the Kiro IDE sends: `KiroIDE-<version>-<machineId>`.
+ * The machine id is a stable, non-reversible hash of the hostname.
+ */
+export function getKiroClientId(): string {
+  const machineId = createHash('sha256').update(hostname()).digest('hex')
+  return `${KIRO_CONSTANTS.USER_AGENT}-${machineId}`
 }

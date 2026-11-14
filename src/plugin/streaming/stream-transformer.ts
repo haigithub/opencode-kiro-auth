@@ -1,6 +1,6 @@
 import { parseBracketToolCalls } from '../../infrastructure/transformers/tool-call-parser.js'
 import { restoreToolName } from '../../infrastructure/transformers/tool-transformer.js'
-import { getContextWindowSize } from '../models.js'
+import { getContextWindowSize } from '../model-registry.js'
 import { estimateTokens } from '../response.js'
 import type { ToolNameMap } from '../types.js'
 import { convertToOpenAI } from './openai-converter.js'

@@ -3,11 +3,13 @@ import type { AccountManager } from '../../plugin/accounts'
 import * as logger from '../../plugin/logger'
 import type { KiroAuthDetails, ManagedAccount } from '../../plugin/types'
 import { fetchUsageLimits, updateAccountQuota } from '../../plugin/usage'
+import { writeUsageStatus } from '../../plugin/usage-status'
 
 interface UsageTrackerConfig {
   usage_tracking_enabled: boolean
   usage_sync_max_retries: number
   usage_sync_cooldown_ms?: number
+  usage_in_status_bar?: boolean
 }
 
 export class UsageTracker {
@@ -42,6 +44,7 @@ export class UsageTracker {
   async syncNow(account: ManagedAccount, auth: KiroAuthDetails): Promise<void> {
     const u = await fetchUsageLimits(auth)
     updateAccountQuota(account, u, this.accountManager)
+    if (this.config.usage_in_status_bar) writeUsageStatus(account)
     await this.repository.batchSave(this.accountManager.getAccounts())
   }
 

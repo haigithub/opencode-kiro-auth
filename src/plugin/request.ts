@@ -1,9 +1,10 @@
 import * as crypto from 'crypto'
 import * as os from 'os'
-import { KIRO_CONSTANTS, buildUrl, extractRegionFromArn } from '../constants.js'
+import { KIRO_CONSTANTS, buildUrl, extractRegionFromArn, getKiroClientId } from '../constants.js'
 import {
   buildHistory,
   extractToolNamesFromHistory,
+  fitHistoryWithStage,
   historyHasToolCalling,
   injectSystemPrompt
 } from '../infrastructure/transformers/history-builder.js'
@@ -23,7 +24,9 @@ import {
   extractAllImages,
   extractTextFromParts
 } from './image-handler.js'
+import * as logger from './logger.js'
 import { resolveKiroModel } from './models.js'
+import { saveHistoryImage, saveTruncatedText } from './truncated-output-store.js'
 import type {
   CodeWhispererRequest,
   Effort,
@@ -40,7 +43,16 @@ interface TransformResult {
   toolNameMap: ToolNameMap
 }
 
-interface EffortConfig {
+interface HistoryLimitConfig {
+  compressOverflowHistory?: boolean
+  maxHistoryEntries?: number
+  historyTrimTarget?: number
+  compressToolResultMaxChars?: number
+  compressToolInputMaxChars?: number
+  compressSaveTruncatedOutput?: boolean
+}
+
+interface EffortConfig extends HistoryLimitConfig {
   effort?: Effort
   autoEffortMapping?: boolean
 }
@@ -53,7 +65,8 @@ function buildCodeWhispererRequest(
   auth: KiroAuthDetails,
   think = false,
   budget = 20000,
-  showToast?: ToastFunction
+  showToast?: ToastFunction,
+  historyLimits: HistoryLimitConfig = {}
 ): TransformResult {
   const req = typeof body === 'string' ? JSON.parse(body) : body
   const { messages, tools, system } = req
@@ -247,6 +260,29 @@ function buildCodeWhispererRequest(
     finalCurTrs.push(...orphanedTrs.map((o) => o.result))
   }
 
+  const builtLength = history.length
+  const fit = fitHistoryWithStage(
+    history,
+    historyLimits.maxHistoryEntries ?? KIRO_CONSTANTS.MAX_HISTORY_ENTRIES,
+    {
+      compressOverflow: historyLimits.compressOverflowHistory ?? false,
+      trimRatio: historyLimits.historyTrimTarget ?? KIRO_CONSTANTS.HISTORY_TRIM_TARGET,
+      toolResultMaxChars:
+        historyLimits.compressToolResultMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_RESULT_MAX_CHARS,
+      toolInputMaxChars:
+        historyLimits.compressToolInputMaxChars ?? KIRO_CONSTANTS.COMPRESS_TOOL_INPUT_MAX_CHARS,
+      saveTruncatedText:
+        (historyLimits.compressSaveTruncatedOutput ?? true) ? saveTruncatedText : undefined,
+      saveImage: (historyLimits.compressSaveTruncatedOutput ?? true) ? saveHistoryImage : undefined
+    }
+  )
+  history = fit.history
+  if (fit.stage !== 'none') {
+    logger.log(
+      `Kiro history compacted to fit entry limit (${fit.stage}): ${builtLength} -> ${history.length}`
+    )
+  }
+
   // CodeWhisperer returns the names it received. Rewrite historical tool calls with the
   // same per-request registry used by current tool specifications so replay stays valid.
   for (const entry of history) {
@@ -315,7 +351,8 @@ export function transformToCodeWhisperer(
     nodeV = process.version.replace('v', '')
   const osN =
     osP === 'win32' ? `windows#${osR}` : osP === 'darwin' ? `macos#${osR}` : `${osP}#${osR}`
-  const ua = `aws-sdk-js/3.738.0 ua/2.1 os/${osN} lang/js md/nodejs#${nodeV} api/codewhisperer#3.738.0 m/E KiroIDE`
+  const kiroClientId = getKiroClientId()
+  const ua = `aws-sdk-js/3.738.0 ua/2.1 os/${osN} lang/js md/nodejs#${nodeV} api/codewhisperer#3.738.0 m/E ${kiroClientId}`
   return {
     url: buildUrl(KIRO_CONSTANTS.BASE_URL, extractRegionFromArn(auth.profileArn) ?? auth.region),
     init: {
@@ -327,7 +364,7 @@ export function transformToCodeWhisperer(
         'amz-sdk-invocation-id': crypto.randomUUID(),
         'amz-sdk-request': 'attempt=1; max=1',
         'x-amzn-kiro-agent-mode': 'vibe',
-        'x-amz-user-agent': 'aws-sdk-js/3.738.0 KiroIDE',
+        'x-amz-user-agent': `aws-sdk-js/3.738.0 ${kiroClientId}`,
         'user-agent': ua,
         Connection: 'close'
       },
@@ -355,7 +392,8 @@ export function transformToSdkRequest(
     auth,
     think,
     budget,
-    showToast
+    showToast,
+    effortConfig
   )
 
   // Resolve effort level based on config and model capabilities
